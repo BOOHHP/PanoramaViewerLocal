@@ -34,6 +34,7 @@ Build locally from the project root:
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "D:\Claude\project\panorama-viewer-local\.secrets\tauri-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 npm run desktop:build
 ```
 
