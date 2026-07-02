@@ -161,12 +161,15 @@ fn display_path(path: &Path) -> String {
 pub fn filter_folders_with_images(paths: Vec<String>) -> Vec<String> {
   paths
     .into_iter()
-    .filter(|path| directory_contains_image_shallow(Path::new(path), 4))
+    .filter(|path| {
+      let mut budget = 2000usize;
+      directory_contains_image_budget(Path::new(path), &mut budget)
+    })
     .collect()
 }
 
-fn directory_contains_image_shallow(directory: &Path, max_depth: usize) -> bool {
-  if max_depth == 0 {
+fn directory_contains_image_budget(directory: &Path, budget: &mut usize) -> bool {
+  if *budget == 0 {
     return false;
   }
 
@@ -174,7 +177,12 @@ fn directory_contains_image_shallow(directory: &Path, max_depth: usize) -> bool 
     return false;
   };
 
-  for entry in read_dir.take(120).flatten() {
+  for entry in read_dir.flatten() {
+    if *budget == 0 {
+      return false;
+    }
+    *budget -= 1;
+
     let Ok(file_type) = entry.file_type() else {
       continue;
     };
@@ -183,7 +191,7 @@ fn directory_contains_image_shallow(directory: &Path, max_depth: usize) -> bool 
       return true;
     }
 
-    if file_type.is_dir() && directory_contains_image_shallow(&entry.path(), max_depth - 1) {
+    if file_type.is_dir() && directory_contains_image_budget(&entry.path(), budget) {
       return true;
     }
   }

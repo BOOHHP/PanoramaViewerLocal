@@ -720,6 +720,13 @@ button:disabled {
   color: var(--text);
 }
 
+.grid-size-slider {
+  flex: 0 0 auto;
+  width: 88px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .folder-path-input {
   min-width: 0;
   width: 100%;
@@ -814,7 +821,7 @@ button:disabled {
 
 .folder-browser-list[data-view='grid'] {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--grid-tile, 132px), 1fr));
   gap: 10px;
   align-content: start;
 }
@@ -829,7 +836,7 @@ button:disabled {
 
 .folder-tile-thumb {
   display: grid;
-  height: 80px;
+  height: calc(var(--grid-tile, 132px) * 0.6);
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--line);

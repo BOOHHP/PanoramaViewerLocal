@@ -140,6 +140,7 @@ app.innerHTML = `
           <button class="folder-icon-button" id="folderBrowserUpButton" type="button" aria-label="上一级" disabled>↑</button>
           <button class="sort-button" id="folderBrowserSortButton" type="button" title="切换排序方式">名称</button>
           <button class="sort-button" id="folderBrowserViewButton" type="button" title="切换视图">列表</button>
+          <input class="grid-size-slider" id="gridSizeSlider" type="range" min="96" max="220" step="4" title="缩略图大小" hidden />
           <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" list="folderPathSuggestions" placeholder="输入或粘贴文件夹路径后回车，点击查看历史" />
           <datalist id="folderPathSuggestions"></datalist>
           <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">↵</button>
@@ -192,6 +193,7 @@ const folderBrowserForwardButton = document.querySelector<HTMLButtonElement>('#f
 const folderBrowserUpButton = document.querySelector<HTMLButtonElement>('#folderBrowserUpButton')!
 const folderBrowserSortButton = document.querySelector<HTMLButtonElement>('#folderBrowserSortButton')!
 const folderBrowserViewButton = document.querySelector<HTMLButtonElement>('#folderBrowserViewButton')!
+const gridSizeSlider = document.querySelector<HTMLInputElement>('#gridSizeSlider')!
 const folderBrowserSystemButton = document.querySelector<HTMLButtonElement>('#folderBrowserSystemButton')!
 const folderBrowserUseButton = document.querySelector<HTMLButtonElement>('#folderBrowserUseButton')!
 const folderBrowserGoButton = document.querySelector<HTMLButtonElement>('#folderBrowserGoButton')!
@@ -246,6 +248,7 @@ let browserHistoryIndex = -1
 let browserImagelessFolders = new Set<string>()
 let browserSortMode: 'name' | 'date' | 'size' = readStoredChoice('browserSortMode', ['name', 'date', 'size'], 'name')
 let browserViewMode: 'list' | 'grid' = readStoredChoice('browserViewMode', ['list', 'grid'], 'list')
+let gridTileSize = clamp(Number(localStorage.getItem('browserGridSize')) || 132, 96, 220)
 let convertSrc: ((path: string) => string) | null = null
 let pathSuggestTicket = 0
 let pathSuggestTimer = 0
@@ -270,6 +273,11 @@ folderBrowserForwardButton.addEventListener('click', () => void goBrowserHistory
 folderBrowserUpButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
 folderBrowserSortButton.addEventListener('click', cycleBrowserSortMode)
 folderBrowserViewButton.addEventListener('click', toggleBrowserViewMode)
+gridSizeSlider.addEventListener('input', () => {
+  gridTileSize = clamp(Number(gridSizeSlider.value) || 132, 96, 220)
+  localStorage.setItem('browserGridSize', String(gridTileSize))
+  applyGridTileSize()
+})
 folderBrowserSystemButton.addEventListener('click', () => {
   void pickSystemFolder()
 })
@@ -298,7 +306,16 @@ document.addEventListener('pointermove', resizeLayout)
 document.addEventListener('pointerup', stopLayoutResize)
 
 void checkForAppUpdates()
-void initializeFolderBrowser()
+restoreBrowserHistory()
+applyGridTileSize()
+gridSizeSlider.value = String(gridTileSize)
+void (async () => {
+  await initializeFolderBrowser()
+  const lastPath = browserHistory[browserHistoryIndex]
+  if (lastPath) {
+    await enterBrowserDirectory(lastPath, undefined, true)
+  }
+})()
 
 viewerSurface.addEventListener('pointerdown', (event) => {
   if (!activeImageId || event.button !== 0) {
@@ -490,6 +507,7 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke,
       browserHistory.push(listing.path)
       browserHistoryIndex = browserHistory.length - 1
     }
+    persistBrowserHistory()
   } catch (error) {
     if (ticket !== browserLoadTicket) {
       return
@@ -531,6 +549,37 @@ function toggleBrowserViewMode() {
   browserViewMode = browserViewMode === 'list' ? 'grid' : 'list'
   localStorage.setItem('browserViewMode', browserViewMode)
   renderFolderBrowser()
+}
+
+function applyGridTileSize() {
+  folderBrowserList.style.setProperty('--grid-tile', `${gridTileSize}px`)
+}
+
+function persistBrowserHistory() {
+  const maxEntries = 30
+  const start = Math.max(0, browserHistory.length - maxEntries)
+  const paths = browserHistory.slice(start)
+  const index = clamp(browserHistoryIndex - start, 0, paths.length - 1)
+  localStorage.setItem('browserHistory', JSON.stringify({ paths, index }))
+}
+
+function restoreBrowserHistory() {
+  try {
+    const stored = JSON.parse(localStorage.getItem('browserHistory') ?? 'null') as { paths?: unknown, index?: unknown } | null
+    if (!stored || !Array.isArray(stored.paths)) {
+      return
+    }
+
+    const paths = stored.paths.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    if (paths.length === 0) {
+      return
+    }
+
+    browserHistory = paths
+    browserHistoryIndex = clamp(typeof stored.index === 'number' ? stored.index : paths.length - 1, 0, paths.length - 1)
+  } catch {
+    // 存储损坏时忽略，从空历史开始
+  }
 }
 
 function sortBrowserEntries() {
@@ -654,6 +703,7 @@ function showBrowserHistoryMenu() {
   clearItem.addEventListener('click', () => {
     browserHistory = browserCurrentPath ? [browserCurrentPath] : []
     browserHistoryIndex = browserHistory.length - 1
+    persistBrowserHistory()
     hideBrowserHistoryMenu()
     renderFolderBrowser()
   })
@@ -678,6 +728,7 @@ function renderFolderBrowser() {
   folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
   folderBrowserSortButton.textContent = browserSortMode === 'name' ? '名称' : browserSortMode === 'date' ? '日期' : '大小'
   folderBrowserViewButton.textContent = browserViewMode === 'list' ? '列表' : '网格'
+  gridSizeSlider.hidden = browserViewMode !== 'grid'
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
   const suffix = browserTruncated ? ' · 仅显示前 500 项' : ''
