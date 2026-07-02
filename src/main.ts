@@ -24,6 +24,7 @@ type PanoramaImage = {
   width: number
   height: number
   kind: ProjectionMode
+  sourcePath?: string
 }
 
 type BrowserRoot = {
@@ -76,6 +77,12 @@ const entryIconMarkup = {
   image: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.4" y="5" width="17.2" height="14" rx="2" fill="#24384A" stroke="#7BC7D9" stroke-width="1.2"/><circle cx="9" cy="10" r="1.7" fill="#F8C660"/><path d="M5.2 17.6l4-4.5 3 3 3.2-3.6 3.4 5.1H5.2z" fill="#7BC7D9"/></svg>',
   file: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4.8c0-.8.6-1.4 1.4-1.4h6.3L18 7.7v11.5c0 .8-.6 1.4-1.4 1.4H7.4c-.8 0-1.4-.6-1.4-1.4V4.8z" fill="#CBD5E1"/><path d="M13.7 3.4L18 7.7h-4.3V3.4z" fill="#94A3B8"/></svg>',
 } as const
+const quickAccessIconMarkup: Record<string, string> = {
+  桌面: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4.6" width="18" height="12" rx="1.6" fill="#3B82C4"/><rect x="4.5" y="6.1" width="15" height="9" rx="0.8" fill="#A8D8F0"/><path d="M9.6 19.8h4.8l-.6-3.2H10.2l-.6 3.2z" fill="#7E8B9B"/><rect x="7.4" y="19.2" width="9.2" height="1.4" rx="0.7" fill="#A9B4C2"/></svg>',
+  下载: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="11.4" r="8.2" fill="#3FA65C"/><path d="M12 7v5.6M12 12.6l-2.7-2.7M12 12.6l2.7-2.7" stroke="#EAF7EE" stroke-width="1.6" stroke-linecap="round"/><rect x="8.6" y="14.4" width="6.8" height="1.5" rx="0.75" fill="#EAF7EE"/></svg>',
+  文档: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4.8c0-.8.6-1.4 1.4-1.4h6.3L18 7.7v11.5c0 .8-.6 1.4-1.4 1.4H7.4c-.8 0-1.4-.6-1.4-1.4V4.8z" fill="#5B9BD5"/><path d="M13.7 3.4L18 7.7h-4.3V3.4z" fill="#B7D6EF"/><rect x="8" y="10.4" width="8" height="1.3" rx="0.65" fill="#EAF3FB"/><rect x="8" y="13" width="8" height="1.3" rx="0.65" fill="#EAF3FB"/><rect x="8" y="15.6" width="5.5" height="1.3" rx="0.65" fill="#EAF3FB"/></svg>',
+  图片: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6.8" y="4.4" width="13.6" height="10.4" rx="1.5" fill="#31506B" transform="rotate(4 13.6 9.6)"/><rect x="3.6" y="7" width="14" height="10.6" rx="1.5" fill="#24384A" stroke="#7BC7D9" stroke-width="1.1"/><circle cx="7.6" cy="10.6" r="1.3" fill="#F8C660"/><path d="M5 16.1l3.2-3.5 2.3 2.3 2.6-2.9 2.7 4.1H5z" fill="#7BC7D9"/></svg>',
+}
 const app = document.querySelector<HTMLDivElement>('#app')!
 const appVersion = '0.1.1'
 const initialFov = 75
@@ -823,7 +830,9 @@ function renderBrowserRoots() {
     button.dataset.active = String(root.path === browserCurrentPath)
     button.addEventListener('click', () => void enterBrowserDirectory(root.path))
     marker.className = `folder-entry-icon ${root.kind}`
-    marker.innerHTML = root.kind === 'drive' ? entryIconMarkup.drive : entryIconMarkup.folder
+    marker.innerHTML = root.kind === 'drive'
+      ? entryIconMarkup.drive
+      : quickAccessIconMarkup[root.name] ?? entryIconMarkup.folder
     label.textContent = root.name
     button.append(marker, label)
     folderBrowserRoots.append(button)
@@ -848,6 +857,12 @@ function renderBrowserEntries() {
     button.addEventListener('click', () => {
       browserSelectedPath = entry.path
       renderFolderBrowser()
+      if (entry.kind === 'image') {
+        const galleryImage = images.find((item) => item.sourcePath === entry.path)
+        if (galleryImage && galleryImage.id !== activeImageId) {
+          loadImage(galleryImage.id)
+        }
+      }
     })
     button.addEventListener('dblclick', () => {
       if (entry.kind === 'directory') {
@@ -952,6 +967,7 @@ async function loadLocalImages(collection: LocalImageCollection, activePath?: st
     width: 0,
     height: 0,
     kind: 'flat' as ProjectionMode,
+    sourcePath: image.path,
   }))
 
   clearImageUrls()
@@ -1048,6 +1064,27 @@ function loadImage(imageId: string) {
   renderLibrary()
   resetView()
   applyProjection(image)
+  syncBrowserSelection(image)
+}
+
+function syncBrowserSelection(image: PanoramaImage) {
+  if (!image.sourcePath) {
+    return
+  }
+
+  const entry = browserEntries.find((item) => item.path === image.sourcePath)
+  if (!entry) {
+    return
+  }
+
+  if (browserSelectedPath !== entry.path) {
+    browserSelectedPath = entry.path
+    renderFolderBrowser()
+  }
+
+  folderBrowserList
+    .querySelector(`.folder-entry-button[data-path="${CSS.escape(entry.path)}"]`)
+    ?.scrollIntoView({ block: 'nearest' })
 }
 
 function showAdjacentImage(direction: -1 | 1) {
