@@ -26,6 +26,29 @@ type PanoramaImage = {
   kind: ProjectionMode
 }
 
+type BrowserRoot = {
+  name: string
+  path: string
+  kind: 'quickAccess' | 'drive'
+}
+
+type BrowserEntry = {
+  name: string
+  path: string
+  kind: 'directory' | 'image' | 'other'
+  size?: number
+  modifiedAt?: number
+}
+
+type DirectoryListing = {
+  path: string
+  parentPath?: string
+  entries: BrowserEntry[]
+  truncated: boolean
+}
+
+type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown
@@ -89,6 +112,40 @@ app.innerHTML = `
         <span id="viewDetails">FOV 75</span>
       </div>
     </main>
+
+    <div class="folder-browser-overlay" id="folderBrowserOverlay" hidden>
+      <section class="folder-browser" role="dialog" aria-modal="true" aria-labelledby="folderBrowserTitle">
+        <header class="folder-browser-header">
+          <div>
+            <p class="eyebrow">Local folders</p>
+            <h2 id="folderBrowserTitle">选择图像文件夹</h2>
+          </div>
+          <button class="folder-icon-button" id="folderBrowserCloseButton" type="button" aria-label="关闭文件夹浏览器">×</button>
+        </header>
+
+        <div class="folder-browser-pathbar">
+          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="返回上一级" disabled>‹</button>
+          <span id="folderBrowserPath">准备浏览本地目录</span>
+        </div>
+
+        <div class="folder-browser-body">
+          <nav class="folder-browser-roots" id="folderBrowserRoots" aria-label="快速访问和磁盘"></nav>
+          <div class="folder-browser-main">
+            <div class="folder-browser-message" id="folderBrowserMessage" aria-live="polite">正在准备文件夹浏览器...</div>
+            <div class="folder-browser-list" id="folderBrowserList" role="listbox" aria-label="当前目录内容"></div>
+          </div>
+        </div>
+
+        <footer class="folder-browser-footer">
+          <span id="folderBrowserSummary">本阶段仅验证内置目录浏览，下一步接入图库加载。</span>
+          <div class="folder-browser-footer-actions">
+            <button class="ghost-action" id="folderBrowserSystemButton" type="button">系统选择</button>
+            <button class="ghost-action" id="folderBrowserCancelButton" type="button">取消</button>
+            <button class="primary-action" id="folderBrowserUseButton" type="button" disabled>使用此文件夹</button>
+          </div>
+        </footer>
+      </section>
+    </div>
   </div>
 `
 
@@ -112,6 +169,17 @@ const emptyState = document.querySelector<HTMLDivElement>('#emptyState')!
 const viewerMessage = document.querySelector<HTMLDivElement>('#viewerMessage')!
 const panoCanvas = document.querySelector<HTMLCanvasElement>('#panoCanvas')!
 const flatImage = document.querySelector<HTMLImageElement>('#flatImage')!
+const folderBrowserOverlay = document.querySelector<HTMLDivElement>('#folderBrowserOverlay')!
+const folderBrowserCloseButton = document.querySelector<HTMLButtonElement>('#folderBrowserCloseButton')!
+const folderBrowserBackButton = document.querySelector<HTMLButtonElement>('#folderBrowserBackButton')!
+const folderBrowserSystemButton = document.querySelector<HTMLButtonElement>('#folderBrowserSystemButton')!
+const folderBrowserCancelButton = document.querySelector<HTMLButtonElement>('#folderBrowserCancelButton')!
+const folderBrowserUseButton = document.querySelector<HTMLButtonElement>('#folderBrowserUseButton')!
+const folderBrowserRoots = document.querySelector<HTMLElement>('#folderBrowserRoots')!
+const folderBrowserList = document.querySelector<HTMLDivElement>('#folderBrowserList')!
+const folderBrowserPath = document.querySelector<HTMLSpanElement>('#folderBrowserPath')!
+const folderBrowserMessage = document.querySelector<HTMLDivElement>('#folderBrowserMessage')!
+const folderBrowserSummary = document.querySelector<HTMLSpanElement>('#folderBrowserSummary')!
 
 folderInput.setAttribute('webkitdirectory', '')
 
@@ -139,6 +207,14 @@ let panoTexture: WebGLTexture | null = null
 let panoMaxTextureSize = 4096
 let panoTextureReady = false
 let panoLoadTicket = 0
+let browserRoots: BrowserRoot[] = []
+let browserEntries: BrowserEntry[] = []
+let browserCurrentPath = ''
+let browserParentPath = ''
+let browserSelectedPath = ''
+let browserTruncated = false
+let browserError = ''
+let browserLoading = false
 
 pickFolderButton.addEventListener('click', () => void pickFolder())
 emptyPickButton.addEventListener('click', () => void pickFolder())
@@ -154,6 +230,13 @@ folderInput.addEventListener('change', () => void loadFiles(Array.from(folderInp
 document.addEventListener('keydown', handleKeyboardNavigation)
 document.addEventListener('fullscreenchange', updateFullscreenLabel)
 window.addEventListener('resize', resizeViewer)
+folderBrowserCloseButton.addEventListener('click', closeFolderBrowser)
+folderBrowserCancelButton.addEventListener('click', closeFolderBrowser)
+folderBrowserBackButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
+folderBrowserSystemButton.addEventListener('click', () => {
+  closeFolderBrowser()
+  void pickSystemFolder()
+})
 
 void checkForAppUpdates()
 
@@ -218,6 +301,16 @@ viewerSurface.addEventListener('wheel', (event) => {
 resizeViewer()
 
 async function pickFolder() {
+  const invoke = await getTauriInvoke()
+  if (invoke) {
+    await openFolderBrowser(invoke)
+    return
+  }
+
+  await pickSystemFolder()
+}
+
+async function pickSystemFolder() {
   if (window.showDirectoryPicker) {
     try {
       const directory = await window.showDirectoryPicker()
@@ -233,6 +326,170 @@ async function pickFolder() {
 
   folderInput.value = ''
   folderInput.click()
+}
+
+async function getTauriInvoke() {
+  if (!window.__TAURI_INTERNALS__) {
+    return null
+  }
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke as TauriInvoke
+  } catch (error) {
+    console.error('Failed to load Tauri invoke API:', error)
+    return null
+  }
+}
+
+async function openFolderBrowser(invoke: TauriInvoke) {
+  folderBrowserOverlay.hidden = false
+  browserError = ''
+  browserSelectedPath = ''
+  renderFolderBrowser()
+  folderBrowserCloseButton.focus()
+
+  try {
+    browserLoading = true
+    renderFolderBrowser()
+    browserRoots = await invoke<BrowserRoot[]>('list_roots')
+    const firstRoot = browserRoots[0]
+    if (firstRoot) {
+      await enterBrowserDirectory(firstRoot.path, invoke)
+    } else {
+      browserLoading = false
+      browserError = '没有找到可浏览的本地目录。'
+      renderFolderBrowser()
+    }
+  } catch (error) {
+    browserLoading = false
+    browserError = String(error)
+    renderFolderBrowser()
+  }
+}
+
+function closeFolderBrowser() {
+  folderBrowserOverlay.hidden = true
+  browserError = ''
+}
+
+async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke) {
+  if (!path || browserLoading) {
+    return
+  }
+
+  const invoke = providedInvoke ?? await getTauriInvoke()
+  if (!invoke) {
+    return
+  }
+
+  browserLoading = true
+  browserError = ''
+  browserSelectedPath = path
+  renderFolderBrowser()
+
+  try {
+    const listing = await invoke<DirectoryListing>('list_directory', { path })
+    browserCurrentPath = listing.path
+    browserParentPath = listing.parentPath ?? ''
+    browserEntries = listing.entries
+    browserSelectedPath = listing.path
+    browserTruncated = listing.truncated
+  } catch (error) {
+    browserError = String(error)
+  } finally {
+    browserLoading = false
+    renderFolderBrowser()
+  }
+}
+
+function renderFolderBrowser() {
+  renderBrowserRoots()
+  renderBrowserEntries()
+  folderBrowserPath.textContent = browserCurrentPath || '选择一个位置开始浏览'
+  folderBrowserBackButton.disabled = !browserParentPath || browserLoading
+  folderBrowserUseButton.disabled = true
+
+  const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
+  const suffix = browserTruncated ? ' · 仅显示前 500 项' : ''
+  folderBrowserSummary.textContent = browserCurrentPath
+    ? `当前目录发现 ${imageCount} 张图像${suffix}。下一步会把“使用此文件夹”接入图库加载。`
+    : '本阶段仅验证内置目录浏览，下一步接入图库加载。'
+
+  if (browserLoading) {
+    folderBrowserMessage.textContent = '正在读取目录...'
+    folderBrowserMessage.hidden = false
+  } else if (browserError) {
+    folderBrowserMessage.textContent = browserError
+    folderBrowserMessage.hidden = false
+  } else if (!browserCurrentPath) {
+    folderBrowserMessage.textContent = '选择左侧常用目录或磁盘开始浏览。'
+    folderBrowserMessage.hidden = false
+  } else if (browserEntries.length === 0) {
+    folderBrowserMessage.textContent = '此目录没有可浏览条目。'
+    folderBrowserMessage.hidden = false
+  } else {
+    folderBrowserMessage.hidden = true
+  }
+}
+
+function renderBrowserRoots() {
+  folderBrowserRoots.replaceChildren()
+
+  for (const root of browserRoots) {
+    const button = document.createElement('button')
+    const marker = document.createElement('span')
+    const label = document.createElement('span')
+
+    button.type = 'button'
+    button.className = 'folder-root-button'
+    button.dataset.active = String(root.path === browserCurrentPath)
+    button.addEventListener('click', () => void enterBrowserDirectory(root.path))
+    marker.className = `folder-entry-icon ${root.kind}`
+    marker.textContent = root.kind === 'drive' ? 'D' : 'Q'
+    label.textContent = root.name
+    button.append(marker, label)
+    folderBrowserRoots.append(button)
+  }
+}
+
+function renderBrowserEntries() {
+  folderBrowserList.replaceChildren()
+
+  for (const entry of browserEntries) {
+    const button = document.createElement('button')
+    const icon = document.createElement('span')
+    const name = document.createElement('span')
+    const kind = document.createElement('span')
+    const meta = document.createElement('span')
+
+    button.type = 'button'
+    button.className = 'folder-entry-button'
+    button.dataset.kind = entry.kind
+    button.dataset.path = entry.path
+    button.dataset.selected = String(entry.path === browserSelectedPath)
+    button.addEventListener('click', () => {
+      browserSelectedPath = entry.path
+      renderFolderBrowser()
+    })
+    button.addEventListener('dblclick', () => {
+      if (entry.kind === 'directory') {
+        void enterBrowserDirectory(entry.path)
+      }
+    })
+
+    icon.className = `folder-entry-icon ${entry.kind}`
+    icon.textContent = getBrowserEntryIcon(entry.kind)
+    name.className = 'folder-entry-name'
+    name.textContent = entry.name
+    kind.className = 'folder-entry-kind'
+    kind.textContent = getBrowserEntryKindLabel(entry.kind)
+    meta.className = 'folder-entry-meta'
+    meta.textContent = getBrowserEntryMeta(entry)
+
+    button.append(icon, name, kind, meta)
+    folderBrowserList.append(button)
+  }
 }
 
 async function collectImages(directory: DirectoryHandle): Promise<File[]> {
@@ -365,6 +622,11 @@ function showAdjacentImage(direction: -1 | 1) {
 }
 
 function handleKeyboardNavigation(event: KeyboardEvent) {
+  if (!folderBrowserOverlay.hidden) {
+    handleFolderBrowserKeyboard(event)
+    return
+  }
+
   if (event.key === 'ArrowLeft' || event.code === 'Numpad4') {
     event.preventDefault()
     showAdjacentImage(-1)
@@ -372,6 +634,41 @@ function handleKeyboardNavigation(event: KeyboardEvent) {
     event.preventDefault()
     showAdjacentImage(1)
   }
+}
+
+function handleFolderBrowserKeyboard(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeFolderBrowser()
+  } else if (event.key === 'Backspace' || (event.altKey && event.key === 'ArrowLeft')) {
+    event.preventDefault()
+    void enterBrowserDirectory(browserParentPath)
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    focusBrowserEntry(1)
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    focusBrowserEntry(-1)
+  } else if (event.key === 'Enter') {
+    const activeElement = document.activeElement as HTMLElement | null
+    if (activeElement?.classList.contains('folder-entry-button') && activeElement.dataset.kind === 'directory') {
+      event.preventDefault()
+      void enterBrowserDirectory(activeElement.dataset.path ?? '')
+    }
+  }
+}
+
+function focusBrowserEntry(direction: 1 | -1) {
+  const entries = Array.from(folderBrowserList.querySelectorAll<HTMLButtonElement>('.folder-entry-button'))
+  if (entries.length === 0) {
+    return
+  }
+
+  const currentIndex = entries.findIndex((entry) => entry === document.activeElement)
+  const nextIndex = currentIndex < 0
+    ? 0
+    : clamp(currentIndex + direction, 0, entries.length - 1)
+  entries[nextIndex]?.focus()
 }
 
 function updateNavigationButtons() {
@@ -725,6 +1022,26 @@ function clearImageUrls() {
   for (const image of images) {
     URL.revokeObjectURL(image.url)
   }
+}
+
+function getBrowserEntryIcon(kind: BrowserEntry['kind']) {
+  return kind === 'directory' ? 'F' : kind === 'image' ? 'I' : 'O'
+}
+
+function getBrowserEntryKindLabel(kind: BrowserEntry['kind']) {
+  return kind === 'directory' ? '文件夹' : kind === 'image' ? '图像' : '其他'
+}
+
+function getBrowserEntryMeta(entry: BrowserEntry) {
+  if (entry.kind === 'image' && typeof entry.size === 'number') {
+    return formatBytes(entry.size)
+  }
+
+  if (typeof entry.modifiedAt === 'number') {
+    return formatDate(entry.modifiedAt)
+  }
+
+  return ''
 }
 
 function isImageFile(file: File) {
