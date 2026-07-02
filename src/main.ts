@@ -135,9 +135,11 @@ app.innerHTML = `
         </header>
 
         <div class="folder-browser-pathbar">
-          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="返回上一级" disabled>‹</button>
+          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="后退" disabled>‹</button>
+          <button class="folder-icon-button" id="folderBrowserForwardButton" type="button" aria-label="前进" disabled>›</button>
+          <button class="folder-icon-button" id="folderBrowserUpButton" type="button" aria-label="上一级" disabled>↑</button>
           <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" placeholder="输入或粘贴文件夹路径后回车" />
-          <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">→</button>
+          <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">↵</button>
         </div>
 
         <div class="folder-browser-body">
@@ -182,6 +184,8 @@ const viewerMessage = document.querySelector<HTMLDivElement>('#viewerMessage')!
 const panoCanvas = document.querySelector<HTMLCanvasElement>('#panoCanvas')!
 const flatImage = document.querySelector<HTMLImageElement>('#flatImage')!
 const folderBrowserBackButton = document.querySelector<HTMLButtonElement>('#folderBrowserBackButton')!
+const folderBrowserForwardButton = document.querySelector<HTMLButtonElement>('#folderBrowserForwardButton')!
+const folderBrowserUpButton = document.querySelector<HTMLButtonElement>('#folderBrowserUpButton')!
 const folderBrowserSystemButton = document.querySelector<HTMLButtonElement>('#folderBrowserSystemButton')!
 const folderBrowserUseButton = document.querySelector<HTMLButtonElement>('#folderBrowserUseButton')!
 const folderBrowserGoButton = document.querySelector<HTMLButtonElement>('#folderBrowserGoButton')!
@@ -227,7 +231,10 @@ let browserError = ''
 let browserLoading = false
 let browserLoadTicket = 0
 let libraryCollapsed = false
+let savedLibraryWidth = ''
 let activeResize: 'library' | 'browser' | '' = ''
+let browserHistory: string[] = []
+let browserHistoryIndex = -1
 
 clearButton.addEventListener('click', clearImages)
 libraryToggleButton.addEventListener('click', toggleLibraryPanel)
@@ -244,7 +251,9 @@ folderInput.addEventListener('change', () => void loadFiles(Array.from(folderInp
 document.addEventListener('keydown', handleKeyboardNavigation)
 document.addEventListener('fullscreenchange', updateFullscreenLabel)
 window.addEventListener('resize', resizeViewer)
-folderBrowserBackButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
+folderBrowserBackButton.addEventListener('click', () => void goBrowserHistory(-1))
+folderBrowserForwardButton.addEventListener('click', () => void goBrowserHistory(1))
+folderBrowserUpButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
 folderBrowserSystemButton.addEventListener('click', () => {
   void pickSystemFolder()
 })
@@ -407,7 +416,7 @@ async function useBrowserCurrentFolder() {
   }
 }
 
-async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke) {
+async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke, fromHistory = false) {
   if (!path) {
     return
   }
@@ -434,6 +443,12 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke)
     browserEntries = listing.entries
     browserSelectedPath = listing.path
     browserTruncated = listing.truncated
+
+    if (!fromHistory && browserHistory[browserHistoryIndex] !== listing.path) {
+      browserHistory = browserHistory.slice(0, browserHistoryIndex + 1)
+      browserHistory.push(listing.path)
+      browserHistoryIndex = browserHistory.length - 1
+    }
   } catch (error) {
     if (ticket !== browserLoadTicket) {
       return
@@ -448,13 +463,26 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke)
   }
 }
 
+async function goBrowserHistory(direction: -1 | 1) {
+  const nextIndex = browserHistoryIndex + direction
+  const nextPath = browserHistory[nextIndex]
+  if (!nextPath) {
+    return
+  }
+
+  browserHistoryIndex = nextIndex
+  await enterBrowserDirectory(nextPath, undefined, true)
+}
+
 function renderFolderBrowser() {
   renderBrowserRoots()
   renderBrowserEntries()
   if (document.activeElement !== folderBrowserPathInput) {
     folderBrowserPathInput.value = browserCurrentPath || ''
   }
-  folderBrowserBackButton.disabled = !browserParentPath || browserLoading
+  folderBrowserBackButton.disabled = browserHistoryIndex <= 0 || browserLoading
+  folderBrowserForwardButton.disabled = browserHistoryIndex >= browserHistory.length - 1 || browserLoading
+  folderBrowserUpButton.disabled = !browserParentPath || browserLoading
   folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
@@ -715,9 +743,22 @@ function handleKeyboardNavigation(event: KeyboardEvent) {
 }
 
 function handleFolderBrowserKeyboard(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+    return false
+  }
+
   if (event.key === 'Escape') {
     return false
   } else if (event.key === 'Backspace' || (event.altKey && event.key === 'ArrowLeft')) {
+    event.preventDefault()
+    void goBrowserHistory(-1)
+    return true
+  } else if (event.altKey && event.key === 'ArrowRight') {
+    event.preventDefault()
+    void goBrowserHistory(1)
+    return true
+  } else if (event.altKey && event.key === 'ArrowUp') {
     event.preventDefault()
     void enterBrowserDirectory(browserParentPath)
     return true
@@ -929,6 +970,7 @@ function loadPanoTexture(image: PanoramaImage) {
   panoTextureReady = false
   showMessage('正在加载 360 全景图...')
   const sourceImage = new Image()
+  sourceImage.crossOrigin = 'anonymous'
   sourceImage.onload = () => {
     if (ticket !== panoLoadTicket) {
       return
@@ -1107,9 +1149,18 @@ function clearImageUrls() {
 
 function toggleLibraryPanel() {
   libraryCollapsed = !libraryCollapsed
+
+  if (libraryCollapsed) {
+    savedLibraryWidth = appShell.style.getPropertyValue('--library-width')
+    appShell.style.removeProperty('--library-width')
+  } else if (savedLibraryWidth) {
+    appShell.style.setProperty('--library-width', savedLibraryWidth)
+  }
+
   appShell.classList.toggle('library-collapsed', libraryCollapsed)
   libraryToggleButton.textContent = libraryCollapsed ? '›' : '‹'
   libraryToggleButton.setAttribute('aria-label', libraryCollapsed ? '展开图库' : '收起图库')
+  resizeViewer()
 }
 
 function startLayoutResize(event: PointerEvent, target: 'library' | 'browser') {
