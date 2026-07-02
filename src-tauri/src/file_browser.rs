@@ -97,17 +97,22 @@ pub fn list_directory(path: String) -> Result<DirectoryListing, String> {
     let Ok(entry) = entry_result else {
       continue;
     };
-    let entry_path = entry.path();
     let name = entry.file_name().to_string_lossy().to_string();
-    let metadata = entry.metadata().ok();
-    let is_directory = metadata.as_ref().is_some_and(|item| item.is_dir());
-    let is_file = metadata.as_ref().is_some_and(|item| item.is_file());
+    let entry_path = entry.path();
+    let file_type = entry.file_type().ok();
+    let is_directory = file_type.as_ref().is_some_and(|item| item.is_dir());
+    let is_file = file_type.as_ref().is_some_and(|item| item.is_file());
     let kind = if is_directory {
       "directory"
     } else if is_file && is_image_name(&name) {
       "image"
     } else {
       "other"
+    };
+    let metadata = if is_file {
+      entry.metadata().ok()
+    } else {
+      entry_path.symlink_metadata().ok()
     };
 
     entries.push(BrowserEntry {
