@@ -101,7 +101,7 @@ app.innerHTML = `
     <main class="viewer-shell" id="viewerShell">
       <div class="viewer-surface" id="viewerSurface" aria-label="全景图查看区域">
         <canvas id="panoCanvas"></canvas>
-        <img class="flat-image" id="flatImage" alt="" hidden />
+        <img class="flat-image" id="flatImage" alt="" hidden draggable="false" />
         <button class="nav-button nav-button-previous" id="previousImageButton" type="button" aria-label="上一张图像" title="上一张" disabled>‹</button>
         <button class="nav-button nav-button-next" id="nextImageButton" type="button" aria-label="下一张图像" title="下一张" disabled>›</button>
         <div class="viewer-message" id="viewerMessage" hidden></div>
@@ -272,7 +272,7 @@ void checkForAppUpdates()
 void initializeFolderBrowser()
 
 viewerSurface.addEventListener('pointerdown', (event) => {
-  if (!activeImageId) {
+  if (!activeImageId || event.button !== 0) {
     return
   }
 
@@ -309,6 +309,8 @@ viewerSurface.addEventListener('pointermove', (event) => {
 viewerSurface.addEventListener('pointerup', releasePointer)
 viewerSurface.addEventListener('pointercancel', releasePointer)
 viewerSurface.addEventListener('pointerleave', clearNavigationProximity)
+viewerSurface.addEventListener('contextmenu', (event) => event.preventDefault())
+viewerSurface.addEventListener('dragstart', (event) => event.preventDefault())
 viewerSurface.addEventListener('wheel', (event) => {
   if (!activeImageId) {
     return

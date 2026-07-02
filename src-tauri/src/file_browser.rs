@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::{env, fs, path::PathBuf, time::UNIX_EPOCH};
+use std::{env, fs, path::{Path, PathBuf}, time::UNIX_EPOCH};
 
 const MAX_DIRECTORY_ENTRIES: usize = 500;
 const MAX_COLLECTED_IMAGES: usize = 5000;
@@ -102,9 +102,6 @@ pub fn list_directory(path: String) -> Result<DirectoryListing, String> {
     let file_type = entry.file_type().ok();
     let is_directory = file_type.as_ref().is_some_and(|item| item.is_dir());
     let is_file = file_type.as_ref().is_some_and(|item| item.is_file());
-    if is_directory && !directory_contains_image(&entry_path, 4) {
-      continue;
-    }
 
     if !is_directory && !(is_file && is_image_name(&name)) {
       continue;
@@ -125,7 +122,7 @@ pub fn list_directory(path: String) -> Result<DirectoryListing, String> {
 
     entries.push(BrowserEntry {
       name,
-      path: entry_path.to_string_lossy().to_string(),
+      path: display_path(&entry_path),
       kind: kind.into(),
       size: metadata.as_ref().filter(|item| item.is_file()).map(|item| item.len()),
       modified_at: metadata
@@ -142,11 +139,22 @@ pub fn list_directory(path: String) -> Result<DirectoryListing, String> {
   });
 
   Ok(DirectoryListing {
-    parent_path: canonical_path.parent().map(|parent| parent.to_string_lossy().to_string()),
-    path: canonical_path.to_string_lossy().to_string(),
+    parent_path: canonical_path.parent().map(display_path),
+    path: display_path(&canonical_path),
     entries,
     truncated,
   })
+}
+
+fn display_path(path: &Path) -> String {
+  let text = path.to_string_lossy();
+  if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+    format!(r"\\{}", stripped)
+  } else if let Some(stripped) = text.strip_prefix(r"\\?\") {
+    stripped.to_string()
+  } else {
+    text.to_string()
+  }
 }
 
 fn push_known_folder(roots: &mut Vec<BrowserRoot>, name: &str, path: PathBuf) {
@@ -214,7 +222,7 @@ mod tests {
   }
 
   #[test]
-  fn lists_only_images_and_folders_with_images() {
+  fn lists_images_and_all_folders_without_deep_scan() {
     let unique = SystemTime::now()
       .duration_since(UNIX_EPOCH)
       .unwrap()
@@ -229,12 +237,13 @@ mod tests {
     fs::write(image_folder.join("child.jpg"), b"child").unwrap();
 
     let listing = list_directory(root.to_string_lossy().to_string()).unwrap();
+    assert!(!listing.path.starts_with(r"\\?\"));
     let names: Vec<String> = listing.entries.into_iter().map(|entry| entry.name).collect();
 
     assert!(names.contains(&"root.png".to_string()));
     assert!(names.contains(&"image-folder".to_string()));
+    assert!(names.contains(&"empty-folder".to_string()));
     assert!(!names.contains(&"notes.txt".to_string()));
-    assert!(!names.contains(&"empty-folder".to_string()));
 
     fs::remove_dir_all(root).unwrap();
   }
@@ -257,7 +266,7 @@ pub fn collect_images_from_directory(path: String) -> Result<LocalImageCollectio
   images.sort_by(|left, right| left.path.to_lowercase().cmp(&right.path.to_lowercase()));
 
   Ok(LocalImageCollection {
-    directory: canonical_path.to_string_lossy().to_string(),
+    directory: display_path(&canonical_path),
     images,
     truncated,
   })
@@ -296,7 +305,7 @@ fn collect_images_recursive(
       if is_image_name(&name) {
         images.push(LocalImage {
           name,
-          path: entry_path.to_string_lossy().to_string(),
+          path: display_path(&entry_path),
           size: metadata.len(),
           modified_at: metadata
             .modified()
@@ -309,34 +318,4 @@ fn collect_images_recursive(
   }
 
   Ok(())
-}
-
-fn directory_contains_image(directory: &PathBuf, max_depth: usize) -> bool {
-  if max_depth == 0 {
-    return false;
-  }
-
-  let Ok(read_dir) = fs::read_dir(directory) else {
-    return false;
-  };
-
-  for entry_result in read_dir.take(300) {
-    let Ok(entry) = entry_result else {
-      continue;
-    };
-    let path = entry.path();
-    let Ok(file_type) = entry.file_type() else {
-      continue;
-    };
-
-    if file_type.is_file() && is_image_name(&entry.file_name().to_string_lossy()) {
-      return true;
-    }
-
-    if file_type.is_dir() && directory_contains_image(&path, max_depth - 1) {
-      return true;
-    }
-  }
-
-  false
 }
