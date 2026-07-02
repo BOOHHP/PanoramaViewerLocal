@@ -35,6 +35,7 @@ declare global {
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'bmp'])
 const app = document.querySelector<HTMLDivElement>('#app')!
+const appVersion = '0.1.1'
 const initialFov = 75
 
 app.innerHTML = `
@@ -43,7 +44,7 @@ app.innerHTML = `
       <header class="brand-block">
         <div class="brand-mark" aria-hidden="true"></div>
         <div>
-          <p class="eyebrow">Local 360 Studio</p>
+          <p class="eyebrow">Local 360 Studio · v${appVersion}</p>
           <h1>Panorama Viewer</h1>
         </div>
       </header>
