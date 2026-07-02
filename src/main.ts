@@ -83,6 +83,7 @@ app.innerHTML = `
           <p class="eyebrow">Local 360 Studio · v${appVersion}</p>
           <h1>Panorama Viewer</h1>
         </div>
+        <button class="folder-icon-button library-toggle-button" id="libraryToggleButton" type="button" aria-label="收起图库">‹</button>
       </header>
 
       <div class="library-meta">
@@ -121,6 +122,9 @@ app.innerHTML = `
       </div>
     </main>
 
+    <div class="library-resizer" id="libraryResizer" role="separator" aria-orientation="vertical" aria-label="调整图库宽度"></div>
+    <div class="folder-browser-resizer" id="folderBrowserResizer" role="separator" aria-orientation="horizontal" aria-label="调整文件浏览器高度"></div>
+
     <div class="folder-browser-overlay" id="folderBrowserOverlay">
       <section class="folder-browser" role="region" aria-labelledby="folderBrowserTitle">
         <header class="folder-browser-header">
@@ -132,7 +136,8 @@ app.innerHTML = `
 
         <div class="folder-browser-pathbar">
           <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="返回上一级" disabled>‹</button>
-          <span id="folderBrowserPath">准备浏览本地目录</span>
+          <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" placeholder="输入或粘贴文件夹路径后回车" />
+          <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">→</button>
         </div>
 
         <div class="folder-browser-body">
@@ -155,6 +160,10 @@ app.innerHTML = `
   </div>
 `
 
+const appShell = document.querySelector<HTMLDivElement>('.app-shell')!
+const libraryToggleButton = document.querySelector<HTMLButtonElement>('#libraryToggleButton')!
+const libraryResizer = document.querySelector<HTMLDivElement>('#libraryResizer')!
+const folderBrowserResizer = document.querySelector<HTMLDivElement>('#folderBrowserResizer')!
 const clearButton = document.querySelector<HTMLButtonElement>('#clearButton')!
 const resetViewButton = document.querySelector<HTMLButtonElement>('#resetViewButton')!
 const projectionButton = document.querySelector<HTMLButtonElement>('#projectionButton')!
@@ -164,7 +173,6 @@ const nextImageButton = document.querySelector<HTMLButtonElement>('#nextImageBut
 const folderInput = document.querySelector<HTMLInputElement>('#folderInput')!
 const imageList = document.querySelector<HTMLDivElement>('#imageList')!
 const imageCount = document.querySelector<HTMLSpanElement>('#imageCount')!
-const activeImageName = document.querySelector<HTMLSpanElement>('#activeImageName')!
 const fileDetails = document.querySelector<HTMLSpanElement>('#fileDetails')!
 const viewDetails = document.querySelector<HTMLSpanElement>('#viewDetails')!
 const viewerShell = document.querySelector<HTMLElement>('#viewerShell')!
@@ -176,9 +184,10 @@ const flatImage = document.querySelector<HTMLImageElement>('#flatImage')!
 const folderBrowserBackButton = document.querySelector<HTMLButtonElement>('#folderBrowserBackButton')!
 const folderBrowserSystemButton = document.querySelector<HTMLButtonElement>('#folderBrowserSystemButton')!
 const folderBrowserUseButton = document.querySelector<HTMLButtonElement>('#folderBrowserUseButton')!
+const folderBrowserGoButton = document.querySelector<HTMLButtonElement>('#folderBrowserGoButton')!
 const folderBrowserRoots = document.querySelector<HTMLElement>('#folderBrowserRoots')!
 const folderBrowserList = document.querySelector<HTMLDivElement>('#folderBrowserList')!
-const folderBrowserPath = document.querySelector<HTMLSpanElement>('#folderBrowserPath')!
+const folderBrowserPathInput = document.querySelector<HTMLInputElement>('#folderBrowserPathInput')!
 const folderBrowserMessage = document.querySelector<HTMLDivElement>('#folderBrowserMessage')!
 const folderBrowserSummary = document.querySelector<HTMLSpanElement>('#folderBrowserSummary')!
 
@@ -217,8 +226,13 @@ let browserTruncated = false
 let browserError = ''
 let browserLoading = false
 let browserLoadTicket = 0
+let libraryCollapsed = false
+let activeResize: 'library' | 'browser' | '' = ''
 
 clearButton.addEventListener('click', clearImages)
+libraryToggleButton.addEventListener('click', toggleLibraryPanel)
+libraryResizer.addEventListener('pointerdown', (event) => startLayoutResize(event, 'library'))
+folderBrowserResizer.addEventListener('pointerdown', (event) => startLayoutResize(event, 'browser'))
 resetViewButton.addEventListener('click', resetView)
 projectionButton.addEventListener('click', cycleProjection)
 fullscreenButton.addEventListener('click', () => void toggleFullscreen())
@@ -235,6 +249,15 @@ folderBrowserSystemButton.addEventListener('click', () => {
   void pickSystemFolder()
 })
 folderBrowserUseButton.addEventListener('click', () => void useBrowserCurrentFolder())
+folderBrowserGoButton.addEventListener('click', () => void enterBrowserDirectory(folderBrowserPathInput.value.trim()))
+folderBrowserPathInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    void enterBrowserDirectory(folderBrowserPathInput.value.trim())
+  }
+})
+document.addEventListener('pointermove', resizeLayout)
+document.addEventListener('pointerup', stopLayoutResize)
 
 void checkForAppUpdates()
 void initializeFolderBrowser()
@@ -428,7 +451,9 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke)
 function renderFolderBrowser() {
   renderBrowserRoots()
   renderBrowserEntries()
-  folderBrowserPath.textContent = browserCurrentPath || '选择一个位置开始浏览'
+  if (document.activeElement !== folderBrowserPathInput) {
+    folderBrowserPathInput.value = browserCurrentPath || ''
+  }
   folderBrowserBackButton.disabled = !browserParentPath || browserLoading
   folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
 
@@ -818,7 +843,6 @@ function clearImages() {
 }
 
 function setEmptyState() {
-  activeImageName.textContent = '未载入'
   fileDetails.textContent = '等待图像'
   viewDetails.textContent = `FOV ${Math.round(fov)}`
   projectionButton.textContent = '投影 自动'
@@ -1013,7 +1037,6 @@ function updateFullscreenLabel() {
 
 function updateStatus() {
   const image = images.find((item) => item.id === activeImageId)
-  activeImageName.textContent = image?.name ?? '未载入'
   fileDetails.textContent = image ? `${image.name} · ${formatBytes(image.size)}` : '等待图像'
   const projection = activeMode === 'sphere' ? '360' : '平面'
   const dimensions = image ? ` · ${image.width}x${image.height}` : ''
@@ -1080,6 +1103,47 @@ function clearImageUrls() {
   for (const image of images) {
     URL.revokeObjectURL(image.url)
   }
+}
+
+function toggleLibraryPanel() {
+  libraryCollapsed = !libraryCollapsed
+  appShell.classList.toggle('library-collapsed', libraryCollapsed)
+  libraryToggleButton.textContent = libraryCollapsed ? '›' : '‹'
+  libraryToggleButton.setAttribute('aria-label', libraryCollapsed ? '展开图库' : '收起图库')
+}
+
+function startLayoutResize(event: PointerEvent, target: 'library' | 'browser') {
+  event.preventDefault()
+  activeResize = target
+  document.body.classList.add('is-resizing-layout')
+}
+
+function resizeLayout(event: PointerEvent) {
+  if (!activeResize) {
+    return
+  }
+
+  if (activeResize === 'library') {
+    libraryCollapsed = false
+    appShell.classList.remove('library-collapsed')
+    libraryToggleButton.textContent = '‹'
+    libraryToggleButton.setAttribute('aria-label', '收起图库')
+    const width = clamp(event.clientX, 240, Math.min(520, window.innerWidth * 0.46))
+    appShell.style.setProperty('--library-width', `${Math.round(width)}px`)
+  } else {
+    const height = clamp(window.innerHeight - event.clientY, 180, Math.min(520, window.innerHeight * 0.55))
+    appShell.style.setProperty('--browser-height', `${Math.round(height)}px`)
+  }
+}
+
+function stopLayoutResize() {
+  if (!activeResize) {
+    return
+  }
+
+  activeResize = ''
+  document.body.classList.remove('is-resizing-layout')
+  resizeViewer()
 }
 
 function getBrowserEntryIcon(kind: BrowserEntry['kind']) {

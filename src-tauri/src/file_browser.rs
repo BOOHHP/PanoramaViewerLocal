@@ -102,9 +102,17 @@ pub fn list_directory(path: String) -> Result<DirectoryListing, String> {
     let file_type = entry.file_type().ok();
     let is_directory = file_type.as_ref().is_some_and(|item| item.is_dir());
     let is_file = file_type.as_ref().is_some_and(|item| item.is_file());
+    if is_directory && !directory_contains_image(&entry_path, 4) {
+      continue;
+    }
+
+    if !is_directory && !(is_file && is_image_name(&name)) {
+      continue;
+    }
+
     let kind = if is_directory {
       "directory"
-    } else if is_file && is_image_name(&name) {
+    } else if is_file {
       "image"
     } else {
       "other"
@@ -172,7 +180,7 @@ fn is_image_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::{collect_images_from_directory, is_image_name};
+  use super::{collect_images_from_directory, is_image_name, list_directory};
   use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
   #[test]
@@ -201,6 +209,32 @@ mod tests {
     assert_eq!(names.len(), 2);
     assert!(names.contains(&"root.JPG".to_string()));
     assert!(names.contains(&"child.webp".to_string()));
+
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn lists_only_images_and_folders_with_images() {
+    let unique = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+    let root = std::env::temp_dir().join(format!("panorama-viewer-list-test-{unique}"));
+    let image_folder = root.join("image-folder");
+    let empty_folder = root.join("empty-folder");
+    fs::create_dir_all(&image_folder).unwrap();
+    fs::create_dir_all(&empty_folder).unwrap();
+    fs::write(root.join("root.png"), b"root").unwrap();
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    fs::write(image_folder.join("child.jpg"), b"child").unwrap();
+
+    let listing = list_directory(root.to_string_lossy().to_string()).unwrap();
+    let names: Vec<String> = listing.entries.into_iter().map(|entry| entry.name).collect();
+
+    assert!(names.contains(&"root.png".to_string()));
+    assert!(names.contains(&"image-folder".to_string()));
+    assert!(!names.contains(&"notes.txt".to_string()));
+    assert!(!names.contains(&"empty-folder".to_string()));
 
     fs::remove_dir_all(root).unwrap();
   }
@@ -275,4 +309,34 @@ fn collect_images_recursive(
   }
 
   Ok(())
+}
+
+fn directory_contains_image(directory: &PathBuf, max_depth: usize) -> bool {
+  if max_depth == 0 {
+    return false;
+  }
+
+  let Ok(read_dir) = fs::read_dir(directory) else {
+    return false;
+  };
+
+  for entry_result in read_dir.take(300) {
+    let Ok(entry) = entry_result else {
+      continue;
+    };
+    let path = entry.path();
+    let Ok(file_type) = entry.file_type() else {
+      continue;
+    };
+
+    if file_type.is_file() && is_image_name(&entry.file_name().to_string_lossy()) {
+      return true;
+    }
+
+    if file_type.is_dir() && directory_contains_image(&path, max_depth - 1) {
+      return true;
+    }
+  }
+
+  false
 }
