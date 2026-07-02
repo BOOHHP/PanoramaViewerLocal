@@ -157,6 +157,40 @@ fn display_path(path: &Path) -> String {
   }
 }
 
+#[tauri::command]
+pub fn filter_folders_with_images(paths: Vec<String>) -> Vec<String> {
+  paths
+    .into_iter()
+    .filter(|path| directory_contains_image_shallow(Path::new(path), 2))
+    .collect()
+}
+
+fn directory_contains_image_shallow(directory: &Path, max_depth: usize) -> bool {
+  if max_depth == 0 {
+    return false;
+  }
+
+  let Ok(read_dir) = fs::read_dir(directory) else {
+    return false;
+  };
+
+  for entry in read_dir.take(120).flatten() {
+    let Ok(file_type) = entry.file_type() else {
+      continue;
+    };
+
+    if file_type.is_file() && is_image_name(&entry.file_name().to_string_lossy()) {
+      return true;
+    }
+
+    if file_type.is_dir() && directory_contains_image_shallow(&entry.path(), max_depth - 1) {
+      return true;
+    }
+  }
+
+  false
+}
+
 fn push_known_folder(roots: &mut Vec<BrowserRoot>, name: &str, path: PathBuf) {
   if path.is_dir() {
     roots.push(BrowserRoot {
@@ -188,7 +222,7 @@ fn is_image_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::{collect_images_from_directory, is_image_name, list_directory};
+  use super::{collect_images_from_directory, filter_folders_with_images, is_image_name, list_directory};
   use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
   #[test]
@@ -244,6 +278,13 @@ mod tests {
     assert!(names.contains(&"image-folder".to_string()));
     assert!(names.contains(&"empty-folder".to_string()));
     assert!(!names.contains(&"notes.txt".to_string()));
+
+    let with_images = filter_folders_with_images(vec![
+      image_folder.to_string_lossy().to_string(),
+      empty_folder.to_string_lossy().to_string(),
+    ]);
+    assert_eq!(with_images.len(), 1);
+    assert!(with_images[0].ends_with("image-folder"));
 
     fs::remove_dir_all(root).unwrap();
   }

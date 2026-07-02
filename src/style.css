@@ -126,9 +126,33 @@ button:focus-visible {
 }
 
 .app-shell.library-collapsed .brand-block > div:not(.brand-mark),
-.app-shell.library-collapsed .library-meta,
-.app-shell.library-collapsed .library-scroll {
+.app-shell.library-collapsed .library-meta {
   display: none;
+}
+
+.app-shell.library-collapsed .library-scroll {
+  width: 100%;
+  margin-top: 36px;
+}
+
+.app-shell.library-collapsed .image-list {
+  gap: 8px;
+  padding-right: 0;
+}
+
+.app-shell.library-collapsed .image-item {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 4px;
+}
+
+.app-shell.library-collapsed .image-copy {
+  display: none;
+}
+
+.app-shell.library-collapsed .image-thumb {
+  width: 36px;
+  height: 26px;
 }
 
 .app-shell.library-collapsed .library-toggle-button {
@@ -619,11 +643,55 @@ button:disabled {
 }
 
 .folder-browser-pathbar {
+  position: relative;
   grid-column: 2 / 4;
   grid-row: 1 / 2;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
+}
+
+.history-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 14px;
+  display: flex;
+  min-width: 280px;
+  max-width: 60%;
+  max-height: 240px;
+  flex-direction: column;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+
+.history-menu-item {
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-menu-item:hover {
+  border-color: rgba(123, 199, 217, 0.28);
+  background: rgba(123, 199, 217, 0.08);
+  color: var(--text);
+}
+
+.history-menu-item[data-current='true'] {
+  color: var(--accent);
 }
 
 .folder-path-input {
@@ -684,6 +752,10 @@ button:disabled {
 .folder-entry-button[data-selected='true'] {
   border-color: rgba(123, 199, 217, 0.28);
   background: rgba(123, 199, 217, 0.08);
+}
+
+.folder-entry-button[data-dim='true'] {
+  opacity: 0.45;
 }
 
 .folder-browser-main {

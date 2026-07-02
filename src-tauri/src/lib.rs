@@ -7,7 +7,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       file_browser::list_roots,
       file_browser::list_directory,
-      file_browser::collect_images_from_directory
+      file_browser::collect_images_from_directory,
+      file_browser::filter_folders_with_images
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

@@ -135,11 +135,13 @@ app.innerHTML = `
         </header>
 
         <div class="folder-browser-pathbar">
-          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="后退" disabled>‹</button>
-          <button class="folder-icon-button" id="folderBrowserForwardButton" type="button" aria-label="前进" disabled>›</button>
+          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="后退" title="后退（长按或右键查看历史）" disabled>‹</button>
+          <button class="folder-icon-button" id="folderBrowserForwardButton" type="button" aria-label="前进" title="前进（长按或右键查看历史）" disabled>›</button>
           <button class="folder-icon-button" id="folderBrowserUpButton" type="button" aria-label="上一级" disabled>↑</button>
-          <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" placeholder="输入或粘贴文件夹路径后回车" />
+          <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" list="folderPathSuggestions" placeholder="输入或粘贴文件夹路径后回车" />
+          <datalist id="folderPathSuggestions"></datalist>
           <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">↵</button>
+          <div class="history-menu" id="browserHistoryMenu" hidden></div>
         </div>
 
         <div class="folder-browser-body">
@@ -194,6 +196,8 @@ const folderBrowserList = document.querySelector<HTMLDivElement>('#folderBrowser
 const folderBrowserPathInput = document.querySelector<HTMLInputElement>('#folderBrowserPathInput')!
 const folderBrowserMessage = document.querySelector<HTMLDivElement>('#folderBrowserMessage')!
 const folderBrowserSummary = document.querySelector<HTMLSpanElement>('#folderBrowserSummary')!
+const folderPathSuggestions = document.querySelector<HTMLDataListElement>('#folderPathSuggestions')!
+const browserHistoryMenu = document.querySelector<HTMLDivElement>('#browserHistoryMenu')!
 
 folderInput.setAttribute('webkitdirectory', '')
 
@@ -235,6 +239,11 @@ let savedLibraryWidth = ''
 let activeResize: 'library' | 'browser' | '' = ''
 let browserHistory: string[] = []
 let browserHistoryIndex = -1
+let browserImagelessFolders = new Set<string>()
+let pathSuggestTicket = 0
+let pathSuggestTimer = 0
+let historyPressTimer = 0
+let suppressHistoryClick = false
 
 clearButton.addEventListener('click', clearImages)
 libraryToggleButton.addEventListener('click', toggleLibraryPanel)
@@ -251,8 +260,22 @@ folderInput.addEventListener('change', () => void loadFiles(Array.from(folderInp
 document.addEventListener('keydown', handleKeyboardNavigation)
 document.addEventListener('fullscreenchange', updateFullscreenLabel)
 window.addEventListener('resize', resizeViewer)
-folderBrowserBackButton.addEventListener('click', () => void goBrowserHistory(-1))
-folderBrowserForwardButton.addEventListener('click', () => void goBrowserHistory(1))
+folderBrowserBackButton.addEventListener('click', () => {
+  if (suppressHistoryClick) {
+    suppressHistoryClick = false
+    return
+  }
+  void goBrowserHistory(-1)
+})
+folderBrowserForwardButton.addEventListener('click', () => {
+  if (suppressHistoryClick) {
+    suppressHistoryClick = false
+    return
+  }
+  void goBrowserHistory(1)
+})
+attachHistoryMenuTrigger(folderBrowserBackButton)
+attachHistoryMenuTrigger(folderBrowserForwardButton)
 folderBrowserUpButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
 folderBrowserSystemButton.addEventListener('click', () => {
   void pickSystemFolder()
@@ -263,6 +286,15 @@ folderBrowserPathInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault()
     void enterBrowserDirectory(folderBrowserPathInput.value.trim())
+  }
+})
+folderBrowserPathInput.addEventListener('input', () => {
+  window.clearTimeout(pathSuggestTimer)
+  pathSuggestTimer = window.setTimeout(() => void updatePathSuggestions(), 200)
+})
+document.addEventListener('pointerdown', (event) => {
+  if (!browserHistoryMenu.hidden && !browserHistoryMenu.contains(event.target as Node)) {
+    hideBrowserHistoryMenu()
   }
 })
 document.addEventListener('pointermove', resizeLayout)
@@ -309,7 +341,6 @@ viewerSurface.addEventListener('pointermove', (event) => {
 viewerSurface.addEventListener('pointerup', releasePointer)
 viewerSurface.addEventListener('pointercancel', releasePointer)
 viewerSurface.addEventListener('pointerleave', clearNavigationProximity)
-viewerSurface.addEventListener('contextmenu', (event) => event.preventDefault())
 viewerSurface.addEventListener('dragstart', (event) => event.preventDefault())
 viewerSurface.addEventListener('wheel', (event) => {
   if (!activeImageId) {
@@ -445,6 +476,8 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke,
     browserEntries = listing.entries
     browserSelectedPath = listing.path
     browserTruncated = listing.truncated
+    browserImagelessFolders = new Set()
+    void markFoldersWithImages(listing.path, invoke)
 
     if (!fromHistory && browserHistory[browserHistoryIndex] !== listing.path) {
       browserHistory = browserHistory.slice(0, browserHistoryIndex + 1)
@@ -474,6 +507,112 @@ async function goBrowserHistory(direction: -1 | 1) {
 
   browserHistoryIndex = nextIndex
   await enterBrowserDirectory(nextPath, undefined, true)
+}
+
+async function markFoldersWithImages(listingPath: string, invoke: TauriInvoke) {
+  const folderPaths = browserEntries.filter((entry) => entry.kind === 'directory').map((entry) => entry.path)
+  if (folderPaths.length === 0) {
+    return
+  }
+
+  try {
+    const withImages = await invoke<string[]>('filter_folders_with_images', { paths: folderPaths })
+    if (browserCurrentPath !== listingPath) {
+      return
+    }
+
+    const withImagesSet = new Set(withImages)
+    browserImagelessFolders = new Set(folderPaths.filter((path) => !withImagesSet.has(path)))
+    for (const button of folderBrowserList.querySelectorAll<HTMLButtonElement>('.folder-entry-button[data-kind="directory"]')) {
+      button.dataset.dim = String(browserImagelessFolders.has(button.dataset.path ?? ''))
+    }
+  } catch {
+    // 后台标记失败不影响浏览
+  }
+}
+
+async function updatePathSuggestions() {
+  const invoke = await getTauriInvoke()
+  if (!invoke) {
+    return
+  }
+
+  const raw = folderBrowserPathInput.value
+  const separatorIndex = Math.max(raw.lastIndexOf('\\'), raw.lastIndexOf('/'))
+  if (separatorIndex < 2) {
+    folderPathSuggestions.replaceChildren()
+    return
+  }
+
+  const parent = raw.slice(0, separatorIndex + 1)
+  const fragment = raw.slice(separatorIndex + 1).toLowerCase()
+  const ticket = ++pathSuggestTicket
+
+  try {
+    const listing = await invoke<DirectoryListing>('list_directory', { path: parent })
+    if (ticket !== pathSuggestTicket) {
+      return
+    }
+
+    const options = listing.entries
+      .filter((entry) => entry.kind === 'directory' && entry.name.toLowerCase().startsWith(fragment))
+      .slice(0, 12)
+      .map((entry) => {
+        const option = document.createElement('option')
+        option.value = entry.path
+        return option
+      })
+    folderPathSuggestions.replaceChildren(...options)
+  } catch {
+    // 输入中的路径可能不完整，忽略
+  }
+}
+
+function attachHistoryMenuTrigger(button: HTMLButtonElement) {
+  button.addEventListener('pointerdown', () => {
+    window.clearTimeout(historyPressTimer)
+    historyPressTimer = window.setTimeout(() => {
+      suppressHistoryClick = true
+      showBrowserHistoryMenu()
+    }, 450)
+  })
+  button.addEventListener('pointerup', () => window.clearTimeout(historyPressTimer))
+  button.addEventListener('pointerleave', () => window.clearTimeout(historyPressTimer))
+  button.addEventListener('contextmenu', (event) => {
+    event.preventDefault()
+    showBrowserHistoryMenu()
+  })
+}
+
+function showBrowserHistoryMenu() {
+  if (browserHistory.length <= 1) {
+    return
+  }
+
+  browserHistoryMenu.replaceChildren()
+  for (let index = browserHistory.length - 1; index >= 0; index -= 1) {
+    const path = browserHistory[index]
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = 'history-menu-item'
+    item.dataset.current = String(index === browserHistoryIndex)
+    item.textContent = path
+    item.title = path
+    item.addEventListener('click', () => {
+      hideBrowserHistoryMenu()
+      if (index !== browserHistoryIndex) {
+        browserHistoryIndex = index
+        void enterBrowserDirectory(path, undefined, true)
+      }
+    })
+    browserHistoryMenu.append(item)
+  }
+
+  browserHistoryMenu.hidden = false
+}
+
+function hideBrowserHistoryMenu() {
+  browserHistoryMenu.hidden = true
 }
 
 function renderFolderBrowser() {
@@ -545,6 +684,9 @@ function renderBrowserEntries() {
     button.dataset.kind = entry.kind
     button.dataset.path = entry.path
     button.dataset.selected = String(entry.path === browserSelectedPath)
+    if (entry.kind === 'directory') {
+      button.dataset.dim = String(browserImagelessFolders.has(entry.path))
+    }
     button.addEventListener('click', () => {
       browserSelectedPath = entry.path
       renderFolderBrowser()
@@ -678,6 +820,7 @@ function renderLibrary() {
     button.type = 'button'
     button.className = 'image-item'
     button.dataset.active = String(image.id === activeImageId)
+    button.title = image.name
     button.addEventListener('click', () => loadImage(image.id))
 
     thumb.className = 'image-thumb'
@@ -751,6 +894,10 @@ function handleFolderBrowserKeyboard(event: KeyboardEvent) {
   }
 
   if (event.key === 'Escape') {
+    if (!browserHistoryMenu.hidden) {
+      hideBrowserHistoryMenu()
+      return true
+    }
     return false
   } else if (event.key === 'Backspace' || (event.altKey && event.key === 'ArrowLeft')) {
     event.preventDefault()
@@ -1208,15 +1355,12 @@ function getBrowserEntryKindLabel(kind: BrowserEntry['kind']) {
 }
 
 function getBrowserEntryMeta(entry: BrowserEntry) {
+  const date = typeof entry.modifiedAt === 'number' ? formatDate(entry.modifiedAt) : ''
   if (entry.kind === 'image' && typeof entry.size === 'number') {
-    return formatBytes(entry.size)
+    return date ? `${formatBytes(entry.size)} · ${date}` : formatBytes(entry.size)
   }
 
-  if (typeof entry.modifiedAt === 'number') {
-    return formatDate(entry.modifiedAt)
-  }
-
-  return ''
+  return date
 }
 
 function isImageFile(file: File) {
