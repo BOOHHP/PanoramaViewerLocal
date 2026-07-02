@@ -1,0 +1,22 @@
+{
+  "name": "panorama-viewer-local",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "local:prepare": "npm run build && neu update",
+    "local:run": "npm run local:prepare && neu run",
+    "local:build": "npm run local:prepare && neu build",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
+  },
+  "devDependencies": {
+    "@neutralinojs/neu": "^11.7.2",
+    "@tauri-apps/cli": "^2.11.4",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  }
+}
