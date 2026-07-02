@@ -70,6 +70,12 @@ declare global {
 }
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'bmp'])
+const entryIconMarkup = {
+  folder: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 6.4c0-.8.7-1.4 1.5-1.4h4.4c.4 0 .8.1 1.1.4l1.4 1.2c.3.3.7.4 1.1.4h7c.8 0 1.5.6 1.5 1.4v1H3V6.4z" fill="#E8A33D"/><path d="M3 9h18v8.1c0 .8-.7 1.4-1.5 1.4h-15c-.8 0-1.5-.6-1.5-1.4V9z" fill="#FFD983"/><path d="M3 9h18v1.6H3V9z" fill="#FFE9B3"/></svg>',
+  drive: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7.6c.2-.9 1-1.6 2-1.6h10c1 0 1.8.7 2 1.6l1 4.4H4l1-4.4z" fill="#A9B4C2"/><rect x="3.4" y="12" width="17.2" height="5.4" rx="1.4" fill="#7E8B9B"/><circle cx="17.6" cy="14.7" r="1" fill="#A8EDF6"/><rect x="5.2" y="14" width="6" height="1.4" rx="0.7" fill="#5D6B7C"/></svg>',
+  image: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.4" y="5" width="17.2" height="14" rx="2" fill="#24384A" stroke="#7BC7D9" stroke-width="1.2"/><circle cx="9" cy="10" r="1.7" fill="#F8C660"/><path d="M5.2 17.6l4-4.5 3 3 3.2-3.6 3.4 5.1H5.2z" fill="#7BC7D9"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4.8c0-.8.6-1.4 1.4-1.4h6.3L18 7.7v11.5c0 .8-.6 1.4-1.4 1.4H7.4c-.8 0-1.4-.6-1.4-1.4V4.8z" fill="#CBD5E1"/><path d="M13.7 3.4L18 7.7h-4.3V3.4z" fill="#94A3B8"/></svg>',
+} as const
 const app = document.querySelector<HTMLDivElement>('#app')!
 const appVersion = '0.1.1'
 const initialFov = 75
@@ -538,6 +544,29 @@ function readStoredChoice<T extends string>(key: string, allowed: readonly T[], 
   return allowed.includes(stored as T) ? stored as T : fallback
 }
 
+async function openBrowserImage(path: string) {
+  if (!path) {
+    return
+  }
+
+  const folderImages = browserEntries.filter((entry) => entry.kind === 'image')
+  if (folderImages.length === 0) {
+    return
+  }
+
+  const collection: LocalImageCollection = {
+    directory: browserCurrentPath,
+    images: folderImages.map((entry) => ({
+      name: entry.name,
+      path: entry.path,
+      size: entry.size ?? 0,
+      modifiedAt: entry.modifiedAt,
+    })),
+    truncated: false,
+  }
+  await loadLocalImages(collection, path)
+}
+
 function cycleBrowserSortMode() {
   browserSortMode = browserSortMode === 'name' ? 'date' : browserSortMode === 'date' ? 'size' : 'name'
   localStorage.setItem('browserSortMode', browserSortMode)
@@ -753,7 +782,9 @@ function renderFolderBrowser() {
   folderBrowserUpButton.disabled = !browserParentPath || browserLoading
   folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
   folderBrowserSortButton.textContent = browserSortMode === 'name' ? '名称' : browserSortMode === 'date' ? '日期' : '大小'
+  folderBrowserSortButton.title = `切换排序方式（快捷键 S）：名称 → 日期 → 大小`
   folderBrowserViewButton.textContent = browserViewMode === 'list' ? '列表' : '网格'
+  folderBrowserViewButton.title = '切换列表/网格视图（快捷键 V）'
   gridSizeSlider.hidden = browserViewMode !== 'grid'
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
@@ -792,7 +823,7 @@ function renderBrowserRoots() {
     button.dataset.active = String(root.path === browserCurrentPath)
     button.addEventListener('click', () => void enterBrowserDirectory(root.path))
     marker.className = `folder-entry-icon ${root.kind}`
-    marker.textContent = root.kind === 'drive' ? 'D' : 'Q'
+    marker.innerHTML = root.kind === 'drive' ? entryIconMarkup.drive : entryIconMarkup.folder
     label.textContent = root.name
     button.append(marker, label)
     folderBrowserRoots.append(button)
@@ -821,6 +852,8 @@ function renderBrowserEntries() {
     button.addEventListener('dblclick', () => {
       if (entry.kind === 'directory') {
         void enterBrowserDirectory(entry.path)
+      } else if (entry.kind === 'image') {
+        void openBrowserImage(entry.path)
       }
     })
 
@@ -840,7 +873,7 @@ function renderBrowserEntries() {
         tile.append(thumb)
       } else {
         tile.dataset.kind = entry.kind
-        tile.textContent = getBrowserEntryIcon(entry.kind)
+        tile.innerHTML = getBrowserEntryIcon(entry.kind)
       }
       button.title = entry.name
       button.append(tile, name)
@@ -849,7 +882,7 @@ function renderBrowserEntries() {
       const kind = document.createElement('span')
       const meta = document.createElement('span')
       icon.className = `folder-entry-icon ${entry.kind}`
-      icon.textContent = getBrowserEntryIcon(entry.kind)
+      icon.innerHTML = getBrowserEntryIcon(entry.kind)
       kind.className = 'folder-entry-kind'
       kind.textContent = getBrowserEntryKindLabel(entry.kind)
       meta.className = 'folder-entry-meta'
@@ -907,7 +940,7 @@ async function loadFiles(files: File[]) {
   }
 }
 
-async function loadLocalImages(collection: LocalImageCollection) {
+async function loadLocalImages(collection: LocalImageCollection, activePath?: string) {
   showMessage('正在读取本地文件夹图像...')
   const { convertFileSrc } = await import('@tauri-apps/api/core')
   const nextImages = collection.images.map((image, index) => ({
@@ -924,7 +957,7 @@ async function loadLocalImages(collection: LocalImageCollection) {
   clearImageUrls()
   images = await Promise.all(nextImages.map(readImageInfo))
   images.sort((left, right) => Number(right.kind === 'sphere') - Number(left.kind === 'sphere') || left.name.localeCompare(right.name, 'zh-Hans-CN'))
-  activeImageId = images[0]?.id ?? ''
+  activeImageId = (activePath && images.find((item) => item.id.startsWith(`${activePath}-`))?.id) || images[0]?.id || ''
   projectionChoice = 'auto'
   renderLibrary()
 
@@ -1083,12 +1116,27 @@ function handleFolderBrowserKeyboard(event: KeyboardEvent) {
     event.preventDefault()
     focusBrowserEntry(event.key === 'ArrowRight' ? 1 : -1)
     return true
+  } else if ((event.key === 's' || event.key === 'S') && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    event.preventDefault()
+    cycleBrowserSortMode()
+    return true
+  } else if ((event.key === 'v' || event.key === 'V') && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    event.preventDefault()
+    toggleBrowserViewMode()
+    return true
   } else if (event.key === 'Enter') {
     const activeElement = document.activeElement as HTMLElement | null
-    if (activeElement?.classList.contains('folder-entry-button') && activeElement.dataset.kind === 'directory') {
-      event.preventDefault()
-      void enterBrowserDirectory(activeElement.dataset.path ?? '')
-      return true
+    if (activeElement?.classList.contains('folder-entry-button')) {
+      if (activeElement.dataset.kind === 'directory') {
+        event.preventDefault()
+        void enterBrowserDirectory(activeElement.dataset.path ?? '')
+        return true
+      }
+      if (activeElement.dataset.kind === 'image') {
+        event.preventDefault()
+        void openBrowserImage(activeElement.dataset.path ?? '')
+        return true
+      }
     }
   }
 
@@ -1529,7 +1577,7 @@ function stopLayoutResize() {
 }
 
 function getBrowserEntryIcon(kind: BrowserEntry['kind']) {
-  return kind === 'directory' ? 'F' : kind === 'image' ? 'I' : 'O'
+  return kind === 'directory' ? entryIconMarkup.folder : kind === 'image' ? entryIconMarkup.image : entryIconMarkup.file
 }
 
 function getBrowserEntryKindLabel(kind: BrowserEntry['kind']) {
