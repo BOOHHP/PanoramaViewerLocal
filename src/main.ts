@@ -135,11 +135,12 @@ app.innerHTML = `
         </header>
 
         <div class="folder-browser-pathbar">
-          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="后退" title="后退（长按或右键查看历史）" disabled>‹</button>
-          <button class="folder-icon-button" id="folderBrowserForwardButton" type="button" aria-label="前进" title="前进（长按或右键查看历史）" disabled>›</button>
+          <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="后退" title="后退" disabled>‹</button>
+          <button class="folder-icon-button" id="folderBrowserForwardButton" type="button" aria-label="前进" title="前进" disabled>›</button>
           <button class="folder-icon-button" id="folderBrowserUpButton" type="button" aria-label="上一级" disabled>↑</button>
           <button class="sort-button" id="folderBrowserSortButton" type="button" title="切换排序方式">名称</button>
-          <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" list="folderPathSuggestions" placeholder="输入或粘贴文件夹路径后回车" />
+          <button class="sort-button" id="folderBrowserViewButton" type="button" title="切换视图">列表</button>
+          <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" list="folderPathSuggestions" placeholder="输入或粘贴文件夹路径后回车，点击查看历史" />
           <datalist id="folderPathSuggestions"></datalist>
           <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">↵</button>
           <div class="history-menu" id="browserHistoryMenu" hidden></div>
@@ -190,6 +191,7 @@ const folderBrowserBackButton = document.querySelector<HTMLButtonElement>('#fold
 const folderBrowserForwardButton = document.querySelector<HTMLButtonElement>('#folderBrowserForwardButton')!
 const folderBrowserUpButton = document.querySelector<HTMLButtonElement>('#folderBrowserUpButton')!
 const folderBrowserSortButton = document.querySelector<HTMLButtonElement>('#folderBrowserSortButton')!
+const folderBrowserViewButton = document.querySelector<HTMLButtonElement>('#folderBrowserViewButton')!
 const folderBrowserSystemButton = document.querySelector<HTMLButtonElement>('#folderBrowserSystemButton')!
 const folderBrowserUseButton = document.querySelector<HTMLButtonElement>('#folderBrowserUseButton')!
 const folderBrowserGoButton = document.querySelector<HTMLButtonElement>('#folderBrowserGoButton')!
@@ -242,11 +244,11 @@ let activeResize: 'library' | 'browser' | '' = ''
 let browserHistory: string[] = []
 let browserHistoryIndex = -1
 let browserImagelessFolders = new Set<string>()
-let browserSortMode: 'name' | 'date' | 'size' = 'name'
+let browserSortMode: 'name' | 'date' | 'size' = readStoredChoice('browserSortMode', ['name', 'date', 'size'], 'name')
+let browserViewMode: 'list' | 'grid' = readStoredChoice('browserViewMode', ['list', 'grid'], 'list')
+let convertSrc: ((path: string) => string) | null = null
 let pathSuggestTicket = 0
 let pathSuggestTimer = 0
-let historyPressTimer = 0
-let suppressHistoryClick = false
 
 clearButton.addEventListener('click', clearImages)
 libraryToggleButton.addEventListener('click', toggleLibraryPanel)
@@ -263,24 +265,11 @@ folderInput.addEventListener('change', () => void loadFiles(Array.from(folderInp
 document.addEventListener('keydown', handleKeyboardNavigation)
 document.addEventListener('fullscreenchange', updateFullscreenLabel)
 window.addEventListener('resize', resizeViewer)
-folderBrowserBackButton.addEventListener('click', () => {
-  if (suppressHistoryClick) {
-    suppressHistoryClick = false
-    return
-  }
-  void goBrowserHistory(-1)
-})
-folderBrowserForwardButton.addEventListener('click', () => {
-  if (suppressHistoryClick) {
-    suppressHistoryClick = false
-    return
-  }
-  void goBrowserHistory(1)
-})
-attachHistoryMenuTrigger(folderBrowserBackButton)
-attachHistoryMenuTrigger(folderBrowserForwardButton)
+folderBrowserBackButton.addEventListener('click', () => void goBrowserHistory(-1))
+folderBrowserForwardButton.addEventListener('click', () => void goBrowserHistory(1))
 folderBrowserUpButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
 folderBrowserSortButton.addEventListener('click', cycleBrowserSortMode)
+folderBrowserViewButton.addEventListener('click', toggleBrowserViewMode)
 folderBrowserSystemButton.addEventListener('click', () => {
   void pickSystemFolder()
 })
@@ -293,11 +282,15 @@ folderBrowserPathInput.addEventListener('keydown', (event) => {
   }
 })
 folderBrowserPathInput.addEventListener('input', () => {
+  hideBrowserHistoryMenu()
   window.clearTimeout(pathSuggestTimer)
   pathSuggestTimer = window.setTimeout(() => void updatePathSuggestions(), 200)
 })
+folderBrowserPathInput.addEventListener('focus', showBrowserHistoryMenu)
+folderBrowserPathInput.addEventListener('click', showBrowserHistoryMenu)
 document.addEventListener('pointerdown', (event) => {
-  if (!browserHistoryMenu.hidden && !browserHistoryMenu.contains(event.target as Node)) {
+  const target = event.target as Node
+  if (!browserHistoryMenu.hidden && !browserHistoryMenu.contains(target) && target !== folderBrowserPathInput) {
     hideBrowserHistoryMenu()
   }
 })
@@ -413,6 +406,13 @@ async function initializeFolderBrowser(providedInvoke?: TauriInvoke) {
   renderFolderBrowser()
 
   try {
+    const { convertFileSrc } = await import('@tauri-apps/api/core')
+    convertSrc = convertFileSrc
+  } catch {
+    convertSrc = null
+  }
+
+  try {
     browserLoading = true
     renderFolderBrowser()
     browserRoots = await invoke<BrowserRoot[]>('list_roots')
@@ -458,6 +458,7 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke,
     return
   }
 
+  hideBrowserHistoryMenu()
   const invoke = providedInvoke ?? await getTauriInvoke()
   if (!invoke) {
     return
@@ -514,9 +515,21 @@ async function goBrowserHistory(direction: -1 | 1) {
   await enterBrowserDirectory(nextPath, undefined, true)
 }
 
+function readStoredChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  const stored = localStorage.getItem(key)
+  return allowed.includes(stored as T) ? stored as T : fallback
+}
+
 function cycleBrowserSortMode() {
   browserSortMode = browserSortMode === 'name' ? 'date' : browserSortMode === 'date' ? 'size' : 'name'
+  localStorage.setItem('browserSortMode', browserSortMode)
   sortBrowserEntries()
+  renderFolderBrowser()
+}
+
+function toggleBrowserViewMode() {
+  browserViewMode = browserViewMode === 'list' ? 'grid' : 'list'
+  localStorage.setItem('browserViewMode', browserViewMode)
   renderFolderBrowser()
 }
 
@@ -599,20 +612,13 @@ async function updatePathSuggestions() {
   }
 }
 
-function attachHistoryMenuTrigger(button: HTMLButtonElement) {
-  button.addEventListener('pointerdown', () => {
-    window.clearTimeout(historyPressTimer)
-    historyPressTimer = window.setTimeout(() => {
-      suppressHistoryClick = true
-      showBrowserHistoryMenu()
-    }, 450)
-  })
-  button.addEventListener('pointerup', () => window.clearTimeout(historyPressTimer))
-  button.addEventListener('pointerleave', () => window.clearTimeout(historyPressTimer))
-  button.addEventListener('contextmenu', (event) => {
-    event.preventDefault()
-    showBrowserHistoryMenu()
-  })
+function formatHistoryPath(path: string) {
+  const parts = path.split(/[\\/]+/).filter(Boolean)
+  if (parts.length <= 4) {
+    return path
+  }
+
+  return `${parts[0]}\\${parts[1]}\\...\\${parts[parts.length - 2]}\\${parts[parts.length - 1]}`
 }
 
 function showBrowserHistoryMenu() {
@@ -620,6 +626,8 @@ function showBrowserHistoryMenu() {
     return
   }
 
+  browserHistoryMenu.style.left = `${folderBrowserPathInput.offsetLeft}px`
+  browserHistoryMenu.style.width = `${folderBrowserPathInput.offsetWidth}px`
   browserHistoryMenu.replaceChildren()
   for (let index = browserHistory.length - 1; index >= 0; index -= 1) {
     const path = browserHistory[index]
@@ -627,7 +635,7 @@ function showBrowserHistoryMenu() {
     item.type = 'button'
     item.className = 'history-menu-item'
     item.dataset.current = String(index === browserHistoryIndex)
-    item.textContent = path
+    item.textContent = formatHistoryPath(path)
     item.title = path
     item.addEventListener('click', () => {
       hideBrowserHistoryMenu()
@@ -669,6 +677,7 @@ function renderFolderBrowser() {
   folderBrowserUpButton.disabled = !browserParentPath || browserLoading
   folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
   folderBrowserSortButton.textContent = browserSortMode === 'name' ? '名称' : browserSortMode === 'date' ? '日期' : '大小'
+  folderBrowserViewButton.textContent = browserViewMode === 'list' ? '列表' : '网格'
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
   const suffix = browserTruncated ? ' · 仅显示前 500 项' : ''
@@ -715,13 +724,10 @@ function renderBrowserRoots() {
 
 function renderBrowserEntries() {
   folderBrowserList.replaceChildren()
+  folderBrowserList.dataset.view = browserViewMode
 
   for (const entry of browserEntries) {
     const button = document.createElement('button')
-    const icon = document.createElement('span')
-    const name = document.createElement('span')
-    const kind = document.createElement('span')
-    const meta = document.createElement('span')
 
     button.type = 'button'
     button.className = 'folder-entry-button'
@@ -741,16 +747,39 @@ function renderBrowserEntries() {
       }
     })
 
-    icon.className = `folder-entry-icon ${entry.kind}`
-    icon.textContent = getBrowserEntryIcon(entry.kind)
+    const name = document.createElement('span')
     name.className = 'folder-entry-name'
     name.textContent = entry.name
-    kind.className = 'folder-entry-kind'
-    kind.textContent = getBrowserEntryKindLabel(entry.kind)
-    meta.className = 'folder-entry-meta'
-    meta.textContent = getBrowserEntryMeta(entry)
 
-    button.append(icon, name, kind, meta)
+    if (browserViewMode === 'grid') {
+      const tile = document.createElement('span')
+      tile.className = 'folder-tile-thumb'
+      if (entry.kind === 'image' && convertSrc) {
+        const thumb = document.createElement('img')
+        thumb.loading = 'lazy'
+        thumb.decoding = 'async'
+        thumb.alt = ''
+        thumb.src = convertSrc(entry.path)
+        tile.append(thumb)
+      } else {
+        tile.dataset.kind = entry.kind
+        tile.textContent = getBrowserEntryIcon(entry.kind)
+      }
+      button.title = entry.name
+      button.append(tile, name)
+    } else {
+      const icon = document.createElement('span')
+      const kind = document.createElement('span')
+      const meta = document.createElement('span')
+      icon.className = `folder-entry-icon ${entry.kind}`
+      icon.textContent = getBrowserEntryIcon(entry.kind)
+      kind.className = 'folder-entry-kind'
+      kind.textContent = getBrowserEntryKindLabel(entry.kind)
+      meta.className = 'folder-entry-meta'
+      meta.textContent = getBrowserEntryMeta(entry)
+      button.append(icon, name, kind, meta)
+    }
+
     folderBrowserList.append(button)
   }
 }
