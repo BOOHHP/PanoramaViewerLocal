@@ -680,6 +680,9 @@ function showBrowserHistoryMenu() {
   browserHistoryMenu.replaceChildren()
   for (let index = browserHistory.length - 1; index >= 0; index -= 1) {
     const path = browserHistory[index]
+    const row = document.createElement('div')
+    row.className = 'history-menu-row'
+
     const item = document.createElement('button')
     item.type = 'button'
     item.className = 'history-menu-item'
@@ -693,7 +696,30 @@ function showBrowserHistoryMenu() {
         void enterBrowserDirectory(path, undefined, true)
       }
     })
-    browserHistoryMenu.append(item)
+
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'history-menu-remove'
+    remove.textContent = '×'
+    remove.title = '删除此条历史'
+    remove.addEventListener('click', () => {
+      browserHistory.splice(index, 1)
+      if (index < browserHistoryIndex) {
+        browserHistoryIndex -= 1
+      } else if (index === browserHistoryIndex) {
+        browserHistoryIndex = Math.min(index, browserHistory.length - 1)
+      }
+      persistBrowserHistory()
+      renderFolderBrowser()
+      if (browserHistory.length <= 1) {
+        hideBrowserHistoryMenu()
+      } else {
+        showBrowserHistoryMenu()
+      }
+    })
+
+    row.append(item, remove)
+    browserHistoryMenu.append(row)
   }
 
   const clearItem = document.createElement('button')
@@ -1047,11 +1073,15 @@ function handleFolderBrowserKeyboard(event: KeyboardEvent) {
     return true
   } else if (event.key === 'ArrowDown') {
     event.preventDefault()
-    focusBrowserEntry(1)
+    focusBrowserEntry(getBrowserFocusStep(1))
     return true
   } else if (event.key === 'ArrowUp') {
     event.preventDefault()
-    focusBrowserEntry(-1)
+    focusBrowserEntry(getBrowserFocusStep(-1))
+    return true
+  } else if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && isFolderEntryFocused()) {
+    event.preventDefault()
+    focusBrowserEntry(event.key === 'ArrowRight' ? 1 : -1)
     return true
   } else if (event.key === 'Enter') {
     const activeElement = document.activeElement as HTMLElement | null
@@ -1065,7 +1095,20 @@ function handleFolderBrowserKeyboard(event: KeyboardEvent) {
   return false
 }
 
-function focusBrowserEntry(direction: 1 | -1) {
+function isFolderEntryFocused() {
+  return document.activeElement?.classList.contains('folder-entry-button') ?? false
+}
+
+function getBrowserFocusStep(direction: 1 | -1): number {
+  if (browserViewMode !== 'grid') {
+    return direction
+  }
+
+  const columns = getComputedStyle(folderBrowserList).gridTemplateColumns.split(' ').length
+  return direction * Math.max(1, columns)
+}
+
+function focusBrowserEntry(direction: number) {
   const entries = Array.from(folderBrowserList.querySelectorAll<HTMLButtonElement>('.folder-entry-button'))
   if (entries.length === 0) {
     return
@@ -1076,6 +1119,7 @@ function focusBrowserEntry(direction: 1 | -1) {
     ? 0
     : clamp(currentIndex + direction, 0, entries.length - 1)
   entries[nextIndex]?.focus()
+  entries[nextIndex]?.scrollIntoView({ block: 'nearest' })
 }
 
 function updateNavigationButtons() {
