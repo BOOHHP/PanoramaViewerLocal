@@ -28,6 +28,7 @@ type PanoramaImage = {
 
 declare global {
   interface Window {
+    __TAURI_INTERNALS__?: unknown
     showDirectoryPicker?: () => Promise<DirectoryHandle>
   }
 }
@@ -152,6 +153,8 @@ folderInput.addEventListener('change', () => void loadFiles(Array.from(folderInp
 document.addEventListener('keydown', handleKeyboardNavigation)
 document.addEventListener('fullscreenchange', updateFullscreenLabel)
 window.addEventListener('resize', resizeViewer)
+
+void checkForAppUpdates()
 
 viewerSurface.addEventListener('pointerdown', (event) => {
   if (!activeImageId) {
@@ -663,6 +666,38 @@ function updateStatus() {
 
 function applyFlatTransform() {
   flatImage.style.transform = `translate(${flatX}px, ${flatY}px) scale(${flatScale})`
+}
+
+async function checkForAppUpdates() {
+  if (!window.__TAURI_INTERNALS__) {
+    return
+  }
+
+  try {
+    const { check } = await import('@tauri-apps/plugin-updater')
+    const update = await check()
+    if (!update) {
+      return
+    }
+
+    const releaseNotes = update.body ? `\n\n${update.body}` : ''
+    const shouldInstall = window.confirm(`发现新版本 ${update.version}。${releaseNotes}\n\n是否立即下载并安装？`)
+    if (!shouldInstall) {
+      return
+    }
+
+    showMessage('正在下载并安装更新...')
+    await update.downloadAndInstall((event) => {
+      if (event.event === 'Progress') {
+        showMessage('正在下载更新...')
+      } else if (event.event === 'Finished') {
+        showMessage('更新下载完成，正在安装...')
+      }
+    })
+    showMessage('更新已安装。Windows 会自动退出应用完成安装。')
+  } catch (error) {
+    console.error('Failed to check for app updates:', error)
+  }
 }
 
 function releasePointer(event: PointerEvent) {
