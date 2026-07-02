@@ -47,6 +47,19 @@ type DirectoryListing = {
   truncated: boolean
 }
 
+type LocalImage = {
+  name: string
+  path: string
+  size: number
+  modifiedAt?: number
+}
+
+type LocalImageCollection = {
+  directory: string
+  images: LocalImage[]
+  truncated: boolean
+}
+
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
 declare global {
@@ -237,6 +250,7 @@ folderBrowserSystemButton.addEventListener('click', () => {
   closeFolderBrowser()
   void pickSystemFolder()
 })
+folderBrowserUseButton.addEventListener('click', () => void useBrowserCurrentFolder())
 
 void checkForAppUpdates()
 
@@ -373,6 +387,32 @@ function closeFolderBrowser() {
   browserError = ''
 }
 
+async function useBrowserCurrentFolder() {
+  if (!browserCurrentPath || browserLoading) {
+    return
+  }
+
+  const invoke = await getTauriInvoke()
+  if (!invoke) {
+    browserError = '当前环境不支持内置文件夹浏览。'
+    renderFolderBrowser()
+    return
+  }
+
+  try {
+    browserLoading = true
+    browserError = ''
+    renderFolderBrowser()
+    const collection = await invoke<LocalImageCollection>('collect_images_from_directory', { path: browserCurrentPath })
+    closeFolderBrowser()
+    await loadLocalImages(collection)
+  } catch (error) {
+    browserLoading = false
+    browserError = String(error)
+    renderFolderBrowser()
+  }
+}
+
 async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke) {
   if (!path || browserLoading) {
     return
@@ -408,13 +448,13 @@ function renderFolderBrowser() {
   renderBrowserEntries()
   folderBrowserPath.textContent = browserCurrentPath || '选择一个位置开始浏览'
   folderBrowserBackButton.disabled = !browserParentPath || browserLoading
-  folderBrowserUseButton.disabled = true
+  folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
   const suffix = browserTruncated ? ' · 仅显示前 500 项' : ''
   folderBrowserSummary.textContent = browserCurrentPath
-    ? `当前目录发现 ${imageCount} 张图像${suffix}。下一步会把“使用此文件夹”接入图库加载。`
-    : '本阶段仅验证内置目录浏览，下一步接入图库加载。'
+    ? `当前目录发现 ${imageCount} 张图像${suffix}。使用此文件夹会扫描子目录并加载图库。`
+    : '选择左侧常用目录或磁盘开始浏览。'
 
   if (browserLoading) {
     folderBrowserMessage.textContent = '正在读取目录...'
@@ -535,6 +575,38 @@ async function loadFiles(files: File[]) {
     loadImage(activeImageId)
   } else {
     setEmptyState()
+  }
+}
+
+async function loadLocalImages(collection: LocalImageCollection) {
+  showMessage('正在读取本地文件夹图像...')
+  const { convertFileSrc } = await import('@tauri-apps/api/core')
+  const nextImages = collection.images.map((image, index) => ({
+    id: `${image.path}-${index}`,
+    name: image.name,
+    url: convertFileSrc(image.path),
+    size: image.size,
+    modifiedAt: image.modifiedAt ?? 0,
+    width: 0,
+    height: 0,
+    kind: 'flat' as ProjectionMode,
+  }))
+
+  clearImageUrls()
+  images = await Promise.all(nextImages.map(readImageInfo))
+  images.sort((left, right) => Number(right.kind === 'sphere') - Number(left.kind === 'sphere') || left.name.localeCompare(right.name, 'zh-Hans-CN'))
+  activeImageId = images[0]?.id ?? ''
+  projectionChoice = 'auto'
+  renderLibrary()
+
+  if (activeImageId) {
+    loadImage(activeImageId)
+    if (collection.truncated) {
+      showMessage('当前文件夹图像数量较多，仅加载前 5000 张。')
+    }
+  } else {
+    setEmptyState()
+    showMessage('当前文件夹中没有找到支持的图像。')
   }
 }
 

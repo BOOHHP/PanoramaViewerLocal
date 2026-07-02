@@ -6,7 +6,8 @@ pub fn run() {
     .plugin(tauri_plugin_updater::Builder::new().build())
     .invoke_handler(tauri::generate_handler![
       file_browser::list_roots,
-      file_browser::list_directory
+      file_browser::list_directory,
+      file_browser::collect_images_from_directory
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

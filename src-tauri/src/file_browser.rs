@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::{env, fs, path::PathBuf, time::UNIX_EPOCH};
 
 const MAX_DIRECTORY_ENTRIES: usize = 500;
+const MAX_COLLECTED_IMAGES: usize = 5000;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +28,23 @@ pub struct DirectoryListing {
   path: String,
   parent_path: Option<String>,
   entries: Vec<BrowserEntry>,
+  truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalImage {
+  name: String,
+  path: String,
+  size: u64,
+  modified_at: Option<u128>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalImageCollection {
+  directory: String,
+  images: Vec<LocalImage>,
   truncated: bool,
 }
 
@@ -149,7 +167,8 @@ fn is_image_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::is_image_name;
+  use super::{collect_images_from_directory, is_image_name};
+  use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
   #[test]
   fn detects_supported_image_names() {
@@ -157,4 +176,98 @@ mod tests {
     assert!(is_image_name("preview.webp"));
     assert!(!is_image_name("notes.txt"));
   }
+
+  #[test]
+  fn collects_images_recursively() {
+    let unique = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+    let root = std::env::temp_dir().join(format!("panorama-viewer-test-{unique}"));
+    let nested = root.join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(root.join("root.JPG"), b"root").unwrap();
+    fs::write(nested.join("child.webp"), b"child").unwrap();
+    fs::write(nested.join("notes.txt"), b"notes").unwrap();
+
+    let collection = collect_images_from_directory(root.to_string_lossy().to_string()).unwrap();
+    let names: Vec<String> = collection.images.into_iter().map(|image| image.name).collect();
+
+    assert_eq!(names.len(), 2);
+    assert!(names.contains(&"root.JPG".to_string()));
+    assert!(names.contains(&"child.webp".to_string()));
+
+    fs::remove_dir_all(root).unwrap();
+  }
+}
+
+#[tauri::command]
+pub fn collect_images_from_directory(path: String) -> Result<LocalImageCollection, String> {
+  let requested_path = PathBuf::from(path);
+  let canonical_path = requested_path
+    .canonicalize()
+    .map_err(|error| format!("无法访问该路径：{}", error))?;
+
+  if !canonical_path.is_dir() {
+    return Err("该路径不是文件夹。".into());
+  }
+
+  let mut images = Vec::new();
+  let mut truncated = false;
+  collect_images_recursive(&canonical_path, &mut images, &mut truncated)?;
+  images.sort_by(|left, right| left.path.to_lowercase().cmp(&right.path.to_lowercase()));
+
+  Ok(LocalImageCollection {
+    directory: canonical_path.to_string_lossy().to_string(),
+    images,
+    truncated,
+  })
+}
+
+fn collect_images_recursive(
+  directory: &PathBuf,
+  images: &mut Vec<LocalImage>,
+  truncated: &mut bool,
+) -> Result<(), String> {
+  if images.len() >= MAX_COLLECTED_IMAGES {
+    *truncated = true;
+    return Ok(());
+  }
+
+  let read_dir = fs::read_dir(directory).map_err(|error| format!("无法读取文件夹：{}", error))?;
+
+  for entry_result in read_dir {
+    if images.len() >= MAX_COLLECTED_IMAGES {
+      *truncated = true;
+      break;
+    }
+
+    let Ok(entry) = entry_result else {
+      continue;
+    };
+    let entry_path = entry.path();
+    let Ok(metadata) = entry.metadata() else {
+      continue;
+    };
+
+    if metadata.is_dir() {
+      let _ = collect_images_recursive(&entry_path, images, truncated);
+    } else if metadata.is_file() {
+      let name = entry.file_name().to_string_lossy().to_string();
+      if is_image_name(&name) {
+        images.push(LocalImage {
+          name,
+          path: entry_path.to_string_lossy().to_string(),
+          size: metadata.len(),
+          modified_at: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis()),
+        });
+      }
+    }
+  }
+
+  Ok(())
 }
