@@ -138,6 +138,7 @@ app.innerHTML = `
           <button class="folder-icon-button" id="folderBrowserBackButton" type="button" aria-label="后退" title="后退（长按或右键查看历史）" disabled>‹</button>
           <button class="folder-icon-button" id="folderBrowserForwardButton" type="button" aria-label="前进" title="前进（长按或右键查看历史）" disabled>›</button>
           <button class="folder-icon-button" id="folderBrowserUpButton" type="button" aria-label="上一级" disabled>↑</button>
+          <button class="sort-button" id="folderBrowserSortButton" type="button" title="切换排序方式">名称</button>
           <input class="folder-path-input" id="folderBrowserPathInput" type="text" spellcheck="false" autocomplete="off" list="folderPathSuggestions" placeholder="输入或粘贴文件夹路径后回车" />
           <datalist id="folderPathSuggestions"></datalist>
           <button class="folder-icon-button" id="folderBrowserGoButton" type="button" aria-label="打开路径">↵</button>
@@ -188,6 +189,7 @@ const flatImage = document.querySelector<HTMLImageElement>('#flatImage')!
 const folderBrowserBackButton = document.querySelector<HTMLButtonElement>('#folderBrowserBackButton')!
 const folderBrowserForwardButton = document.querySelector<HTMLButtonElement>('#folderBrowserForwardButton')!
 const folderBrowserUpButton = document.querySelector<HTMLButtonElement>('#folderBrowserUpButton')!
+const folderBrowserSortButton = document.querySelector<HTMLButtonElement>('#folderBrowserSortButton')!
 const folderBrowserSystemButton = document.querySelector<HTMLButtonElement>('#folderBrowserSystemButton')!
 const folderBrowserUseButton = document.querySelector<HTMLButtonElement>('#folderBrowserUseButton')!
 const folderBrowserGoButton = document.querySelector<HTMLButtonElement>('#folderBrowserGoButton')!
@@ -240,6 +242,7 @@ let activeResize: 'library' | 'browser' | '' = ''
 let browserHistory: string[] = []
 let browserHistoryIndex = -1
 let browserImagelessFolders = new Set<string>()
+let browserSortMode: 'name' | 'date' | 'size' = 'name'
 let pathSuggestTicket = 0
 let pathSuggestTimer = 0
 let historyPressTimer = 0
@@ -277,6 +280,7 @@ folderBrowserForwardButton.addEventListener('click', () => {
 attachHistoryMenuTrigger(folderBrowserBackButton)
 attachHistoryMenuTrigger(folderBrowserForwardButton)
 folderBrowserUpButton.addEventListener('click', () => void enterBrowserDirectory(browserParentPath))
+folderBrowserSortButton.addEventListener('click', cycleBrowserSortMode)
 folderBrowserSystemButton.addEventListener('click', () => {
   void pickSystemFolder()
 })
@@ -474,6 +478,7 @@ async function enterBrowserDirectory(path: string, providedInvoke?: TauriInvoke,
     browserCurrentPath = listing.path
     browserParentPath = listing.parentPath ?? ''
     browserEntries = listing.entries
+    sortBrowserEntries()
     browserSelectedPath = listing.path
     browserTruncated = listing.truncated
     browserImagelessFolders = new Set()
@@ -507,6 +512,32 @@ async function goBrowserHistory(direction: -1 | 1) {
 
   browserHistoryIndex = nextIndex
   await enterBrowserDirectory(nextPath, undefined, true)
+}
+
+function cycleBrowserSortMode() {
+  browserSortMode = browserSortMode === 'name' ? 'date' : browserSortMode === 'date' ? 'size' : 'name'
+  sortBrowserEntries()
+  renderFolderBrowser()
+}
+
+function sortBrowserEntries() {
+  const rank = (kind: BrowserEntry['kind']) => kind === 'directory' ? 0 : kind === 'image' ? 1 : 2
+  browserEntries.sort((left, right) => {
+    const rankDiff = rank(left.kind) - rank(right.kind)
+    if (rankDiff !== 0) {
+      return rankDiff
+    }
+
+    if (browserSortMode === 'date') {
+      return (right.modifiedAt ?? 0) - (left.modifiedAt ?? 0)
+    }
+
+    if (browserSortMode === 'size' && left.kind === 'image') {
+      return (right.size ?? 0) - (left.size ?? 0)
+    }
+
+    return left.name.localeCompare(right.name, 'zh-Hans-CN')
+  })
 }
 
 async function markFoldersWithImages(listingPath: string, invoke: TauriInvoke) {
@@ -608,6 +639,18 @@ function showBrowserHistoryMenu() {
     browserHistoryMenu.append(item)
   }
 
+  const clearItem = document.createElement('button')
+  clearItem.type = 'button'
+  clearItem.className = 'history-menu-item history-menu-clear'
+  clearItem.textContent = '清空历史'
+  clearItem.addEventListener('click', () => {
+    browserHistory = browserCurrentPath ? [browserCurrentPath] : []
+    browserHistoryIndex = browserHistory.length - 1
+    hideBrowserHistoryMenu()
+    renderFolderBrowser()
+  })
+  browserHistoryMenu.append(clearItem)
+
   browserHistoryMenu.hidden = false
 }
 
@@ -625,6 +668,7 @@ function renderFolderBrowser() {
   folderBrowserForwardButton.disabled = browserHistoryIndex >= browserHistory.length - 1 || browserLoading
   folderBrowserUpButton.disabled = !browserParentPath || browserLoading
   folderBrowserUseButton.disabled = !browserCurrentPath || browserLoading
+  folderBrowserSortButton.textContent = browserSortMode === 'name' ? '名称' : browserSortMode === 'date' ? '日期' : '大小'
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
   const suffix = browserTruncated ? ' · 仅显示前 500 项' : ''
@@ -799,6 +843,7 @@ async function readImageInfo(image: PanoramaImage): Promise<PanoramaImage> {
 
 function renderLibrary() {
   const listScrollTop = imageList.scrollTop
+  let activeItemButton: HTMLButtonElement | null = null
   imageList.replaceChildren()
   const panoramaCount = images.filter((image) => image.kind === 'sphere').length
   imageCount.textContent = images.length > 0 ? `${panoramaCount} 张全景 / ${images.length} 张图像` : '0 张图像'
@@ -816,10 +861,11 @@ function renderLibrary() {
     const name = document.createElement('span')
     const kind = document.createElement('span')
     const meta = document.createElement('span')
+    const isActive = image.id === activeImageId
 
     button.type = 'button'
     button.className = 'image-item'
-    button.dataset.active = String(image.id === activeImageId)
+    button.dataset.active = String(isActive)
     button.title = image.name
     button.addEventListener('click', () => loadImage(image.id))
 
@@ -838,9 +884,17 @@ function renderLibrary() {
     content.append(row, meta)
     button.append(thumb, content)
     imageList.append(button)
+
+    if (isActive) {
+      activeItemButton = button
+    }
   }
 
   imageList.scrollTop = listScrollTop
+
+  if (libraryCollapsed) {
+    activeItemButton?.scrollIntoView({ block: 'nearest' })
+  }
 }
 
 function loadImage(imageId: string) {
@@ -1310,6 +1364,10 @@ function toggleLibraryPanel() {
   libraryToggleButton.textContent = libraryCollapsed ? '›' : '‹'
   libraryToggleButton.setAttribute('aria-label', libraryCollapsed ? '展开图库' : '收起图库')
   resizeViewer()
+
+  if (libraryCollapsed) {
+    imageList.querySelector<HTMLButtonElement>('.image-item[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
+  }
 }
 
 function startLayoutResize(event: PointerEvent, target: 'library' | 'browser') {

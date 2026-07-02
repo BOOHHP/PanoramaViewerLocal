@@ -694,6 +694,32 @@ button:disabled {
   color: var(--accent);
 }
 
+.history-menu-clear {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 6px 6px;
+  color: var(--dim);
+}
+
+.sort-button {
+  flex: 0 0 auto;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  transition: border-color 160ms ease, color 160ms ease;
+}
+
+.sort-button:hover {
+  border-color: rgba(168, 237, 246, 0.5);
+  color: var(--text);
+}
+
 .folder-path-input {
   min-width: 0;
   width: 100%;

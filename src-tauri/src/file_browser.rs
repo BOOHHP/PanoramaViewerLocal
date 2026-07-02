@@ -161,7 +161,7 @@ fn display_path(path: &Path) -> String {
 pub fn filter_folders_with_images(paths: Vec<String>) -> Vec<String> {
   paths
     .into_iter()
-    .filter(|path| directory_contains_image_shallow(Path::new(path), 2))
+    .filter(|path| directory_contains_image_shallow(Path::new(path), 4))
     .collect()
 }
 
