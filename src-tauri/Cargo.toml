@@ -1,6 +1,6 @@
 [package]
 name = "panorama-viewer-local"
-version = "0.1.2"
+version = "0.1.3"
 description = "Lightweight local panorama viewer"
 authors = ["local"]
 license = ""
