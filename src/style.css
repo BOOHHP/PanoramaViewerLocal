@@ -543,6 +543,16 @@ button:disabled {
   border-radius: 8px;
   background: rgba(12, 15, 20, 0.72);
   backdrop-filter: blur(18px);
+  opacity: 0.14;
+  transition: opacity 240ms ease;
+}
+
+.viewer-shell.near-toolbar .viewer-toolbar,
+.viewer-toolbar:hover,
+.viewer-toolbar:focus-within,
+.viewer-shell.near-status .status-strip,
+.status-strip:hover {
+  opacity: 1;
 }
 
 .viewer-toolbar {

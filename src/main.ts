@@ -124,6 +124,7 @@ app.innerHTML = `
       </div>
 
       <div class="viewer-toolbar" aria-label="查看器控制">
+        <button class="tool-button folder-load-tool" id="loadFolderButton" type="button" title="加载该图片所在文件夹的全部图片，恢复左右切图" hidden>加载文件夹</button>
         <button class="tool-button" id="resetViewButton" type="button" disabled>居中</button>
         <button class="tool-button projection-tool" id="projectionButton" type="button" disabled>投影 自动</button>
         <button class="tool-button" id="fullscreenButton" type="button" disabled>全屏</button>
@@ -186,6 +187,9 @@ const libraryResizer = document.querySelector<HTMLDivElement>('#libraryResizer')
 const folderBrowserResizer = document.querySelector<HTMLDivElement>('#folderBrowserResizer')!
 const clearButton = document.querySelector<HTMLButtonElement>('#clearButton')!
 const resetViewButton = document.querySelector<HTMLButtonElement>('#resetViewButton')!
+const loadFolderButton = document.querySelector<HTMLButtonElement>('#loadFolderButton')!
+const viewerToolbar = document.querySelector<HTMLDivElement>('.viewer-toolbar')!
+const statusStrip = document.querySelector<HTMLDivElement>('.status-strip')!
 const projectionButton = document.querySelector<HTMLButtonElement>('#projectionButton')!
 const fullscreenButton = document.querySelector<HTMLButtonElement>('#fullscreenButton')!
 const previousImageButton = document.querySelector<HTMLButtonElement>('#previousImageButton')!
@@ -271,6 +275,7 @@ libraryToggleButton.addEventListener('click', toggleLibraryPanel)
 libraryResizer.addEventListener('pointerdown', (event) => startLayoutResize(event, 'library'))
 folderBrowserResizer.addEventListener('pointerdown', (event) => startLayoutResize(event, 'browser'))
 resetViewButton.addEventListener('click', resetView)
+loadFolderButton.addEventListener('click', () => void loadImageFolder())
 projectionButton.addEventListener('click', cycleProjection)
 fullscreenButton.addEventListener('click', () => void toggleFullscreen())
 previousImageButton.addEventListener('pointerdown', (event) => event.stopPropagation())
@@ -368,6 +373,8 @@ viewerSurface.addEventListener('pointermove', (event) => {
 viewerSurface.addEventListener('pointerup', releasePointer)
 viewerSurface.addEventListener('pointercancel', releasePointer)
 viewerSurface.addEventListener('pointerleave', clearNavigationProximity)
+viewerShell.addEventListener('pointermove', updateOverlayProximity)
+viewerShell.addEventListener('pointerleave', clearOverlayProximity)
 viewerSurface.addEventListener('dragstart', (event) => event.preventDefault())
 viewerSurface.addEventListener('wheel', (event) => {
   if (!activeImageId) {
@@ -572,6 +579,45 @@ async function openBrowserImage(path: string) {
     truncated: false,
   }
   await loadLocalImages(collection, path)
+}
+
+async function loadImageFolder() {
+  const image = images.find((item) => item.id === activeImageId) ?? images[0]
+  const sourcePath = image?.sourcePath
+  if (!sourcePath) {
+    return
+  }
+
+  const invoke = await getTauriInvoke()
+  if (!invoke) {
+    return
+  }
+
+  const parent = sourcePath.replace(/[\\/][^\\/]+$/, '')
+  if (!parent) {
+    return
+  }
+
+  try {
+    const listing = await invoke<DirectoryListing>('list_directory', { path: parent })
+    const folderImages = listing.entries.filter((entry) => entry.kind === 'image')
+    if (folderImages.length === 0) {
+      return
+    }
+
+    await loadLocalImages({
+      directory: listing.path,
+      images: folderImages.map((entry) => ({
+        name: entry.name,
+        path: entry.path,
+        size: entry.size ?? 0,
+        modifiedAt: entry.modifiedAt,
+      })),
+      truncated: listing.truncated,
+    }, sourcePath)
+  } catch (error) {
+    showMessage(String(error))
+  }
 }
 
 function cycleBrowserSortMode() {
@@ -1006,6 +1052,7 @@ function renderLibrary() {
   resetViewButton.disabled = images.length === 0
   projectionButton.disabled = images.length === 0
   fullscreenButton.disabled = images.length === 0
+  loadFolderButton.hidden = !(images.length === 1 && images[0]?.sourcePath)
   updateNavigationButtons()
 
   for (const image of images) {
@@ -1233,6 +1280,22 @@ function updateNavigationProximity(event: PointerEvent) {
 
 function clearNavigationProximity() {
   viewerSurface.classList.remove('nav-near-left', 'nav-near-right')
+}
+
+function updateOverlayProximity(event: PointerEvent) {
+  viewerShell.classList.toggle('near-toolbar', isNearRect(viewerToolbar.getBoundingClientRect(), event, 90))
+  viewerShell.classList.toggle('near-status', isNearRect(statusStrip.getBoundingClientRect(), event, 90))
+}
+
+function clearOverlayProximity() {
+  viewerShell.classList.remove('near-toolbar', 'near-status')
+}
+
+function isNearRect(rect: DOMRect, event: PointerEvent, margin: number) {
+  return event.clientX >= rect.left - margin
+    && event.clientX <= rect.right + margin
+    && event.clientY >= rect.top - margin
+    && event.clientY <= rect.bottom + margin
 }
 
 function applyProjection(image: PanoramaImage) {
