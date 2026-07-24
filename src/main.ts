@@ -1005,7 +1005,7 @@ function renderBrowserEntries() {
         tile.dataset.kind = entry.kind
         tile.innerHTML = getBrowserEntryIcon(entry.kind)
         if (entry.kind === 'video') {
-          requestVideoThumb(entry.path, (url) => {
+          requestVideoThumb(entry.path, videoNeedsPrepare(entry.name) || !convertSrc ? '' : convertSrc(entry.path), (url) => {
             tile.replaceChildren()
             tile.classList.add('has-thumb')
             tile.style.backgroundImage = `url("${url}")`
@@ -1184,8 +1184,9 @@ function renderLibrary() {
     if (image.media === 'video') {
       thumb.classList.add('is-video')
       thumb.textContent = '▶'
-      if (image.sourcePath) {
-        requestVideoThumb(image.sourcePath, (url) => {
+      const thumbKey = image.sourcePath ?? image.url
+      if (thumbKey) {
+        requestVideoThumb(thumbKey, videoNeedsPrepare(image.name) ? '' : image.url, (url) => {
           thumb.textContent = ''
           thumb.style.backgroundImage = `url("${url}")`
         })
@@ -1340,18 +1341,29 @@ function checkVideoTools(): Promise<boolean> {
   return videoToolsPromise
 }
 
-function requestVideoThumb(path: string, apply: (url: string) => void) {
-  const cached = videoThumbCache.get(path)
+function requestVideoThumb(key: string, playableUrl: string, apply: (url: string) => void) {
+  const cached = videoThumbCache.get(key)
   if (cached) {
     apply(cached)
     return
   }
 
   videoThumbChain = videoThumbChain.then(async () => {
-    const existing = videoThumbCache.get(path)
+    const existing = videoThumbCache.get(key)
     if (existing) {
       apply(existing)
       return
+    }
+
+    if (playableUrl) {
+      try {
+        const dataUrl = await captureVideoFrame(playableUrl)
+        videoThumbCache.set(key, dataUrl)
+        apply(dataUrl)
+        return
+      } catch {
+        // 捕获首帧失败时回退 ffmpeg
+      }
     }
 
     if (!await checkVideoTools()) {
@@ -1364,14 +1376,63 @@ function requestVideoThumb(path: string, apply: (url: string) => void) {
     }
 
     try {
-      const thumbPath = await invoke<string>('get_video_thumbnail', { path })
+      const thumbPath = await invoke<string>('get_video_thumbnail', { path: key })
       const { convertFileSrc } = await import('@tauri-apps/api/core')
       const url = convertFileSrc(thumbPath)
-      videoThumbCache.set(path, url)
+      videoThumbCache.set(key, url)
       apply(url)
     } catch {
       // 无法生成缩略图时保留图标占位
     }
+  })
+}
+
+function captureVideoFrame(url: string) {
+  return new Promise<string>((resolve, reject) => {
+    const probe = document.createElement('video')
+    probe.muted = true
+    probe.crossOrigin = 'anonymous'
+    probe.preload = 'auto'
+
+    let settled = false
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      probe.onloadeddata = null
+      probe.onerror = null
+      probe.removeAttribute('src')
+      probe.load()
+    }
+    const fail = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      reject(new Error('无法捕获视频首帧'))
+    }
+    const timer = window.setTimeout(fail, 8000)
+
+    probe.onerror = fail
+    probe.onloadeddata = () => {
+      if (settled) {
+        return
+      }
+      try {
+        const scale = Math.min(1, 320 / Math.max(1, probe.videoWidth))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(probe.videoWidth * scale))
+        canvas.height = Math.max(1, Math.round(probe.videoHeight * scale))
+        const context = canvas.getContext('2d')!
+        context.drawImage(probe, 0, 0, canvas.width, canvas.height)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.72)
+        settled = true
+        cleanup()
+        resolve(dataUrl)
+      } catch {
+        fail()
+      }
+    }
+    probe.src = `${url}#t=0.001`
   })
 }
 
@@ -1607,7 +1668,8 @@ function applyProjection(image: PanoramaImage) {
     viewerVideo.hidden = false
     viewerVideo.classList.toggle('as-texture', activeMode === 'sphere')
     videoControls.hidden = false
-    if (viewerVideo.getAttribute('src') !== image.url) {
+    const isNewSource = viewerVideo.getAttribute('src') !== image.url
+    if (isNewSource) {
       viewerVideo.src = image.url
       viewerVideo.playbackRate = videoRates[videoRateIndex]
     }
@@ -1616,6 +1678,11 @@ function applyProjection(image: PanoramaImage) {
     } else {
       hideMessage()
       applyFlatTransform()
+    }
+    if (isNewSource) {
+      viewerVideo.play().catch(() => {
+        // 自动播放被阻止时保持暂停，用户可手动播放
+      })
     }
     updateVideoControls()
   } else {

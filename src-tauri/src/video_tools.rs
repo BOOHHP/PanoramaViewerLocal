@@ -93,20 +93,18 @@ pub fn get_video_thumbnail(path: String) -> Result<String, String> {
     return Ok(target.to_string_lossy().to_string());
   }
 
-  for seek in ["1", "0"] {
-    let output = new_command(&tool)
-      .args(["-y", "-ss", seek, "-i"])
-      .arg(&path)
-      .args(["-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5"])
-      .arg(&target)
-      .output()
-      .map_err(|error| format!("ffmpeg 执行失败：{error}"))?;
+  let output = new_command(&tool)
+    .args(["-y", "-ss", "0", "-i"])
+    .arg(&path)
+    .args(["-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5"])
+    .arg(&target)
+    .output()
+    .map_err(|error| format!("ffmpeg 执行失败：{error}"))?;
 
-    let created = output.status.success()
-      && fs::metadata(&target).map(|meta| meta.len() > 0).unwrap_or(false);
-    if created {
-      return Ok(target.to_string_lossy().to_string());
-    }
+  let created = output.status.success()
+    && fs::metadata(&target).map(|meta| meta.len() > 0).unwrap_or(false);
+  if created {
+    return Ok(target.to_string_lossy().to_string());
   }
 
   let _ = fs::remove_file(&target);
