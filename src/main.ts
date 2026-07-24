@@ -90,7 +90,7 @@ const quickAccessIconMarkup: Record<string, string> = {
   图片: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6.8" y="4.4" width="13.6" height="10.4" rx="1.5" fill="#31506B" transform="rotate(4 13.6 9.6)"/><rect x="3.6" y="7" width="14" height="10.6" rx="1.5" fill="#24384A" stroke="#7BC7D9" stroke-width="1.1"/><circle cx="7.6" cy="10.6" r="1.3" fill="#F8C660"/><path d="M5 16.1l3.2-3.5 2.3 2.3 2.6-2.9 2.7 4.1H5z" fill="#7BC7D9"/></svg>',
 }
 const app = document.querySelector<HTMLDivElement>('#app')!
-const appVersion = '0.1.4'
+const appVersion = '0.2.0'
 const initialFov = 75
 
 app.innerHTML = `
