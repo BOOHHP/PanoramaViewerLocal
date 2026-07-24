@@ -24,6 +24,8 @@ type PanoramaImage = {
   width: number
   height: number
   kind: ProjectionMode
+  media: 'image' | 'video'
+  duration?: number
   sourcePath?: string
 }
 
@@ -36,7 +38,7 @@ type BrowserRoot = {
 type BrowserEntry = {
   name: string
   path: string
-  kind: 'directory' | 'image' | 'other'
+  kind: 'directory' | 'image' | 'video' | 'other'
   size?: number
   modifiedAt?: number
 }
@@ -71,10 +73,13 @@ declare global {
 }
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'bmp'])
+const videoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v'])
+const videoRates = [0.5, 1, 1.5, 2]
 const entryIconMarkup = {
   folder: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 6.4c0-.8.7-1.4 1.5-1.4h4.4c.4 0 .8.1 1.1.4l1.4 1.2c.3.3.7.4 1.1.4h7c.8 0 1.5.6 1.5 1.4v1H3V6.4z" fill="#E8A33D"/><path d="M3 9h18v8.1c0 .8-.7 1.4-1.5 1.4h-15c-.8 0-1.5-.6-1.5-1.4V9z" fill="#FFD983"/><path d="M3 9h18v1.6H3V9z" fill="#FFE9B3"/></svg>',
   drive: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7.6c.2-.9 1-1.6 2-1.6h10c1 0 1.8.7 2 1.6l1 4.4H4l1-4.4z" fill="#A9B4C2"/><rect x="3.4" y="12" width="17.2" height="5.4" rx="1.4" fill="#7E8B9B"/><circle cx="17.6" cy="14.7" r="1" fill="#A8EDF6"/><rect x="5.2" y="14" width="6" height="1.4" rx="0.7" fill="#5D6B7C"/></svg>',
   image: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.4" y="5" width="17.2" height="14" rx="2" fill="#24384A" stroke="#7BC7D9" stroke-width="1.2"/><circle cx="9" cy="10" r="1.7" fill="#F8C660"/><path d="M5.2 17.6l4-4.5 3 3 3.2-3.6 3.4 5.1H5.2z" fill="#7BC7D9"/></svg>',
+  video: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.4" y="5" width="17.2" height="14" rx="2" fill="#2B2543" stroke="#B49BE4" stroke-width="1.2"/><path d="M10 8.9l6 3.1-6 3.1V8.9z" fill="#B49BE4"/></svg>',
   file: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4.8c0-.8.6-1.4 1.4-1.4h6.3L18 7.7v11.5c0 .8-.6 1.4-1.4 1.4H7.4c-.8 0-1.4-.6-1.4-1.4V4.8z" fill="#CBD5E1"/><path d="M13.7 3.4L18 7.7h-4.3V3.4z" fill="#94A3B8"/></svg>',
 } as const
 const quickAccessIconMarkup: Record<string, string> = {
@@ -104,7 +109,7 @@ app.innerHTML = `
         <button class="clear-inline-button" id="clearButton" type="button" disabled>清空</button>
       </div>
 
-      <input id="folderInput" type="file" accept="image/*" multiple hidden />
+      <input id="folderInput" type="file" accept="image/*,video/*" multiple hidden />
 
       <div class="library-scroll">
         <div class="image-list" id="imageList" aria-label="可查看的全景图"></div>
@@ -115,6 +120,7 @@ app.innerHTML = `
       <div class="viewer-surface" id="viewerSurface" aria-label="全景图查看区域">
         <canvas id="panoCanvas"></canvas>
         <img class="flat-image" id="flatImage" alt="" hidden draggable="false" />
+        <video class="viewer-video" id="viewerVideo" hidden playsinline preload="metadata"></video>
         <button class="nav-button nav-button-previous" id="previousImageButton" type="button" aria-label="上一张图像" title="上一张" disabled>‹</button>
         <button class="nav-button nav-button-next" id="nextImageButton" type="button" aria-label="下一张图像" title="下一张" disabled>›</button>
         <div class="viewer-message" id="viewerMessage" hidden></div>
@@ -128,6 +134,14 @@ app.innerHTML = `
         <button class="tool-button" id="resetViewButton" type="button" disabled>居中</button>
         <button class="tool-button projection-tool" id="projectionButton" type="button" disabled>投影 自动</button>
         <button class="tool-button" id="fullscreenButton" type="button" disabled>全屏</button>
+      </div>
+
+      <div class="video-controls" id="videoControls" hidden aria-label="视频播放控制">
+        <button class="tool-button video-play-button" id="videoPlayButton" type="button">播放</button>
+        <span class="video-time" id="videoTimeLabel">00:00 / 00:00</span>
+        <input class="video-seek" id="videoSeekSlider" type="range" min="0" max="0" step="0.1" value="0" title="播放进度" />
+        <input class="video-volume" id="videoVolumeSlider" type="range" min="0" max="1" step="0.05" value="1" title="音量" />
+        <button class="tool-button video-rate-button" id="videoRateButton" type="button" title="播放速度">1x</button>
       </div>
 
       <div class="status-strip">
@@ -205,6 +219,13 @@ const emptyState = document.querySelector<HTMLDivElement>('#emptyState')!
 const viewerMessage = document.querySelector<HTMLDivElement>('#viewerMessage')!
 const panoCanvas = document.querySelector<HTMLCanvasElement>('#panoCanvas')!
 const flatImage = document.querySelector<HTMLImageElement>('#flatImage')!
+const viewerVideo = document.querySelector<HTMLVideoElement>('#viewerVideo')!
+const videoControls = document.querySelector<HTMLDivElement>('#videoControls')!
+const videoPlayButton = document.querySelector<HTMLButtonElement>('#videoPlayButton')!
+const videoSeekSlider = document.querySelector<HTMLInputElement>('#videoSeekSlider')!
+const videoVolumeSlider = document.querySelector<HTMLInputElement>('#videoVolumeSlider')!
+const videoRateButton = document.querySelector<HTMLButtonElement>('#videoRateButton')!
+const videoTimeLabel = document.querySelector<HTMLSpanElement>('#videoTimeLabel')!
 const folderBrowserBackButton = document.querySelector<HTMLButtonElement>('#folderBrowserBackButton')!
 const folderBrowserForwardButton = document.querySelector<HTMLButtonElement>('#folderBrowserForwardButton')!
 const folderBrowserUpButton = document.querySelector<HTMLButtonElement>('#folderBrowserUpButton')!
@@ -248,6 +269,9 @@ let panoTexture: WebGLTexture | null = null
 let panoMaxTextureSize = 4096
 let panoTextureReady = false
 let panoLoadTicket = 0
+let videoRafId = 0
+let videoSeekDragging = false
+let videoRateIndex = 1
 let browserRoots: BrowserRoot[] = []
 let browserEntries: BrowserEntry[] = []
 let browserCurrentPath = ''
@@ -277,6 +301,45 @@ folderBrowserResizer.addEventListener('pointerdown', (event) => startLayoutResiz
 resetViewButton.addEventListener('click', resetView)
 loadFolderButton.addEventListener('click', () => void loadImageFolder())
 projectionButton.addEventListener('click', cycleProjection)
+viewerVideo.crossOrigin = 'anonymous'
+viewerVideo.addEventListener('play', () => {
+  updateVideoControls()
+  if (activeMode === 'sphere' && isActiveVideo()) {
+    startVideoLoop()
+  }
+})
+viewerVideo.addEventListener('pause', () => {
+  stopVideoLoop()
+  updateVideoControls()
+})
+viewerVideo.addEventListener('ended', updateVideoControls)
+viewerVideo.addEventListener('timeupdate', updateVideoControls)
+viewerVideo.addEventListener('loadedmetadata', updateVideoControls)
+viewerVideo.addEventListener('seeked', () => {
+  if (activeMode === 'sphere' && isActiveVideo()) {
+    uploadVideoFrame()
+    renderPano()
+  }
+})
+viewerVideo.addEventListener('error', () => {
+  if (isActiveVideo()) {
+    showMessage('视频无法解码。若为 H.265/HEVC 编码，请先安装 Microsoft Store 的“HEVC 视频扩展”后重试。')
+  }
+})
+videoPlayButton.addEventListener('click', togglePlayback)
+videoSeekSlider.addEventListener('pointerdown', () => { videoSeekDragging = true })
+videoSeekSlider.addEventListener('pointerup', () => { videoSeekDragging = false })
+videoSeekSlider.addEventListener('input', () => {
+  viewerVideo.currentTime = Number(videoSeekSlider.value)
+})
+videoVolumeSlider.addEventListener('input', () => {
+  viewerVideo.volume = Number(videoVolumeSlider.value)
+})
+videoRateButton.addEventListener('click', () => {
+  videoRateIndex = (videoRateIndex + 1) % videoRates.length
+  viewerVideo.playbackRate = videoRates[videoRateIndex]
+  videoRateButton.textContent = `${videoRates[videoRateIndex]}x`
+})
 fullscreenButton.addEventListener('click', () => void toggleFullscreen())
 previousImageButton.addEventListener('pointerdown', (event) => event.stopPropagation())
 previousImageButton.addEventListener('click', () => showAdjacentImage(-1))
@@ -563,7 +626,7 @@ async function openBrowserImage(path: string) {
     return
   }
 
-  const entry = browserEntries.find((item) => item.kind === 'image' && item.path === path)
+  const entry = browserEntries.find((item) => (item.kind === 'image' || item.kind === 'video') && item.path === path)
   if (!entry) {
     return
   }
@@ -600,7 +663,7 @@ async function loadImageFolder() {
 
   try {
     const listing = await invoke<DirectoryListing>('list_directory', { path: parent })
-    const folderImages = listing.entries.filter((entry) => entry.kind === 'image')
+    const folderImages = listing.entries.filter((entry) => entry.kind === 'image' || entry.kind === 'video')
     if (folderImages.length === 0) {
       return
     }
@@ -676,7 +739,7 @@ function sortBrowserEntries() {
       return (right.modifiedAt ?? 0) - (left.modifiedAt ?? 0)
     }
 
-    if (browserSortMode === 'size' && left.kind === 'image') {
+    if (browserSortMode === 'size' && left.kind !== 'directory') {
       return (right.size ?? 0) - (left.size ?? 0)
     }
 
@@ -841,9 +904,11 @@ function renderFolderBrowser() {
   gridSizeSlider.hidden = browserViewMode !== 'grid'
 
   const imageCount = browserEntries.filter((entry) => entry.kind === 'image').length
+  const videoCount = browserEntries.filter((entry) => entry.kind === 'video').length
   const suffix = browserTruncated ? ' · 仅显示前 500 项' : ''
+  const videoPart = videoCount > 0 ? `、${videoCount} 个视频` : ''
   folderBrowserSummary.textContent = browserCurrentPath
-    ? `当前目录发现 ${imageCount} 张图像${suffix}。使用此文件夹会扫描子目录并加载图库。`
+    ? `当前目录发现 ${imageCount} 张图像${videoPart}${suffix}。使用此文件夹会扫描子目录并加载图库。`
     : '选择左侧常用目录或磁盘开始浏览。'
 
   if (browserLoading) {
@@ -913,7 +978,7 @@ function renderBrowserEntries() {
     button.addEventListener('dblclick', () => {
       if (entry.kind === 'directory') {
         void enterBrowserDirectory(entry.path)
-      } else if (entry.kind === 'image') {
+      } else if (entry.kind === 'image' || entry.kind === 'video') {
         void openBrowserImage(entry.path)
       }
     })
@@ -961,7 +1026,7 @@ async function collectImages(directory: DirectoryHandle): Promise<File[]> {
   for await (const entry of directory.values()) {
     if (entry.kind === 'file') {
       const file = await entry.getFile()
-      if (isImageFile(file)) {
+      if (isMediaFile(file)) {
         files.push(file)
       }
     } else {
@@ -973,9 +1038,9 @@ async function collectImages(directory: DirectoryHandle): Promise<File[]> {
 }
 
 async function loadFiles(files: File[]) {
-  showMessage('正在读取图像尺寸...')
+  showMessage('正在读取媒体信息...')
   const nextImages = files
-    .filter(isImageFile)
+    .filter(isMediaFile)
     .map((file, index) => ({
       id: `${file.name}-${file.lastModified}-${file.size}-${index}`,
       name: file.name,
@@ -985,6 +1050,7 @@ async function loadFiles(files: File[]) {
       width: 0,
       height: 0,
       kind: 'flat' as ProjectionMode,
+      media: getMediaKindFromName(file.name) || (file.type.startsWith('video/') ? 'video' as const : 'image' as const),
     }))
 
   clearImageUrls()
@@ -1002,7 +1068,7 @@ async function loadFiles(files: File[]) {
 }
 
 async function loadLocalImages(collection: LocalImageCollection, activePath?: string) {
-  showMessage('正在读取本地文件夹图像...')
+  showMessage('正在读取本地文件夹媒体...')
   const { convertFileSrc } = await import('@tauri-apps/api/core')
   const nextImages = collection.images.map((image, index) => ({
     id: `${image.path}-${index}`,
@@ -1013,6 +1079,7 @@ async function loadLocalImages(collection: LocalImageCollection, activePath?: st
     width: 0,
     height: 0,
     kind: 'flat' as ProjectionMode,
+    media: getMediaKindFromName(image.name) || 'image' as const,
     sourcePath: image.path,
   }))
 
@@ -1035,11 +1102,32 @@ async function loadLocalImages(collection: LocalImageCollection, activePath?: st
 }
 
 async function readImageInfo(image: PanoramaImage): Promise<PanoramaImage> {
-  const dimensions = await getImageDimensions(image.url)
-  image.width = dimensions.width
-  image.height = dimensions.height
+  if (image.media === 'video') {
+    const info = await getVideoInfo(image.url)
+    image.width = info.width
+    image.height = info.height
+    image.duration = info.duration
+  } else {
+    const dimensions = await getImageDimensions(image.url)
+    image.width = dimensions.width
+    image.height = dimensions.height
+  }
   image.kind = isEquirectangular(image) ? 'sphere' : 'flat'
   return image
+}
+
+function getVideoInfo(url: string) {
+  return new Promise<{ width: number, height: number, duration: number }>((resolve) => {
+    const probe = document.createElement('video')
+    probe.preload = 'metadata'
+    probe.onloadedmetadata = () => {
+      resolve({ width: probe.videoWidth, height: probe.videoHeight, duration: probe.duration })
+      probe.removeAttribute('src')
+      probe.load()
+    }
+    probe.onerror = () => resolve({ width: 0, height: 0, duration: 0 })
+    probe.src = url
+  })
 }
 
 function renderLibrary() {
@@ -1047,7 +1135,10 @@ function renderLibrary() {
   let activeItemButton: HTMLButtonElement | null = null
   imageList.replaceChildren()
   const panoramaCount = images.filter((image) => image.kind === 'sphere').length
-  imageCount.textContent = images.length > 0 ? `${panoramaCount} 张全景 / ${images.length} 张图像` : '0 张图像'
+  const videoCount = images.filter((image) => image.media === 'video').length
+  imageCount.textContent = images.length > 0
+    ? (videoCount > 0 ? `${panoramaCount} 张全景 / ${images.length} 项媒体` : `${panoramaCount} 张全景 / ${images.length} 张图像`)
+    : '0 张图像'
   clearButton.disabled = images.length === 0
   resetViewButton.disabled = images.length === 0
   projectionButton.disabled = images.length === 0
@@ -1072,15 +1163,23 @@ function renderLibrary() {
     button.addEventListener('click', () => loadImage(image.id))
 
     thumb.className = 'image-thumb'
-    thumb.style.backgroundImage = `url("${image.url}")`
+    if (image.media === 'video') {
+      thumb.classList.add('is-video')
+      thumb.textContent = '▶'
+    } else {
+      thumb.style.backgroundImage = `url("${image.url}")`
+    }
     content.className = 'image-copy'
     row.className = 'image-title-row'
     name.className = 'image-name'
     kind.className = `image-kind ${image.kind}`
     meta.className = 'image-meta'
     name.textContent = image.name
-    kind.textContent = image.kind === 'sphere' ? '360' : '源图'
-    meta.textContent = `${formatBytes(image.size)} · ${image.width}x${image.height} · ${formatDate(image.modifiedAt)}`
+    kind.textContent = image.media === 'video'
+      ? (image.kind === 'sphere' ? '360视频' : '视频')
+      : (image.kind === 'sphere' ? '360' : '源图')
+    const durationSuffix = image.media === 'video' && image.duration ? ` · ${formatTime(image.duration)}` : ''
+    meta.textContent = `${formatBytes(image.size)} · ${image.width}x${image.height} · ${formatDate(image.modifiedAt)}${durationSuffix}`
 
     row.append(name, kind)
     content.append(row, meta)
@@ -1155,6 +1254,34 @@ function handleKeyboardNavigation(event: KeyboardEvent) {
     return
   }
 
+  if (isActiveVideo()) {
+    if (event.key === ' ') {
+      event.preventDefault()
+      togglePlayback()
+      return
+    }
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      seekVideoBy(-5)
+      return
+    }
+    if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      seekVideoBy(5)
+      return
+    }
+    if (event.key === ',') {
+      event.preventDefault()
+      showAdjacentImage(-1)
+      return
+    }
+    if (event.key === '.') {
+      event.preventDefault()
+      showAdjacentImage(1)
+      return
+    }
+  }
+
   if (event.key === 'ArrowLeft' || event.code === 'Numpad4') {
     event.preventDefault()
     showAdjacentImage(-1)
@@ -1216,7 +1343,7 @@ function handleFolderBrowserKeyboard(event: KeyboardEvent) {
         void enterBrowserDirectory(activeElement.dataset.path ?? '')
         return true
       }
-      if (activeElement.dataset.kind === 'image') {
+      if (activeElement.dataset.kind === 'image' || activeElement.dataset.kind === 'video') {
         event.preventDefault()
         void openBrowserImage(activeElement.dataset.path ?? '')
         return true
@@ -1284,7 +1411,9 @@ function clearNavigationProximity() {
 
 function updateOverlayProximity(event: PointerEvent) {
   viewerShell.classList.toggle('near-toolbar', isNearRect(viewerToolbar.getBoundingClientRect(), event, 90))
-  viewerShell.classList.toggle('near-status', isNearRect(statusStrip.getBoundingClientRect(), event, 90))
+  const nearStatus = isNearRect(statusStrip.getBoundingClientRect(), event, 90)
+    || (!videoControls.hidden && isNearRect(videoControls.getBoundingClientRect(), event, 90))
+  viewerShell.classList.toggle('near-status', nearStatus)
 }
 
 function clearOverlayProximity() {
@@ -1301,20 +1430,141 @@ function isNearRect(rect: DOMRect, event: PointerEvent, margin: number) {
 function applyProjection(image: PanoramaImage) {
   activeMode = resolveProjectionMode(image)
   projectionButton.textContent = getProjectionLabel()
-  flatImage.hidden = activeMode !== 'flat'
+  const isVideo = image.media === 'video'
   panoCanvas.hidden = activeMode !== 'sphere'
+  flatImage.hidden = isVideo || activeMode !== 'flat'
   panoTextureReady = false
+  stopVideoLoop()
 
-  if (activeMode === 'sphere') {
+  if (isVideo) {
     flatImage.removeAttribute('src')
-    loadPanoTexture(image)
+    viewerVideo.hidden = false
+    viewerVideo.classList.toggle('as-texture', activeMode === 'sphere')
+    videoControls.hidden = false
+    if (viewerVideo.getAttribute('src') !== image.url) {
+      viewerVideo.src = image.url
+      viewerVideo.playbackRate = videoRates[videoRateIndex]
+    }
+    if (activeMode === 'sphere') {
+      prepareVideoPanoTexture()
+    } else {
+      hideMessage()
+      applyFlatTransform()
+    }
+    updateVideoControls()
   } else {
-    hideMessage()
-    flatImage.src = image.url
-    applyFlatTransform()
+    resetVideoElement()
+    if (activeMode === 'sphere') {
+      flatImage.removeAttribute('src')
+      loadPanoTexture(image)
+    } else {
+      hideMessage()
+      flatImage.src = image.url
+      applyFlatTransform()
+    }
   }
 
   updateStatus()
+}
+
+function isActiveVideo() {
+  return images.find((item) => item.id === activeImageId)?.media === 'video'
+}
+
+function togglePlayback() {
+  if (!isActiveVideo()) {
+    return
+  }
+
+  if (viewerVideo.paused) {
+    void viewerVideo.play()
+  } else {
+    viewerVideo.pause()
+  }
+}
+
+function seekVideoBy(deltaSeconds: number) {
+  if (!Number.isFinite(viewerVideo.duration)) {
+    return
+  }
+
+  viewerVideo.currentTime = clamp(viewerVideo.currentTime + deltaSeconds, 0, viewerVideo.duration)
+}
+
+function updateVideoControls() {
+  const duration = viewerVideo.duration
+  if (Number.isFinite(duration) && duration > 0) {
+    videoSeekSlider.max = String(duration)
+  }
+  if (!videoSeekDragging) {
+    videoSeekSlider.value = String(viewerVideo.currentTime)
+  }
+  videoTimeLabel.textContent = `${formatTime(viewerVideo.currentTime)} / ${formatTime(duration)}`
+  videoPlayButton.textContent = viewerVideo.paused ? '播放' : '暂停'
+}
+
+function resetVideoElement() {
+  stopVideoLoop()
+  viewerVideo.pause()
+  if (viewerVideo.hasAttribute('src')) {
+    viewerVideo.removeAttribute('src')
+    viewerVideo.load()
+  }
+  viewerVideo.hidden = true
+  viewerVideo.classList.remove('as-texture')
+  videoControls.hidden = true
+}
+
+function prepareVideoPanoTexture() {
+  if (!initPano() || !gl || !panoTexture) {
+    return
+  }
+
+  showMessage('正在加载 360 视频...')
+  const onReady = () => {
+    uploadVideoFrame()
+    panoTextureReady = true
+    hideMessage()
+    resizeViewer()
+    renderPano()
+    if (!viewerVideo.paused) {
+      startVideoLoop()
+    }
+  }
+
+  if (viewerVideo.readyState >= 2) {
+    onReady()
+  } else {
+    viewerVideo.addEventListener('loadeddata', onReady, { once: true })
+  }
+}
+
+function uploadVideoFrame() {
+  if (!gl || !panoTexture || viewerVideo.readyState < 2) {
+    return
+  }
+
+  gl.bindTexture(gl.TEXTURE_2D, panoTexture)
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, viewerVideo)
+}
+
+function startVideoLoop() {
+  cancelAnimationFrame(videoRafId)
+  const step = () => {
+    if (activeMode !== 'sphere' || !isActiveVideo() || viewerVideo.paused || viewerVideo.ended) {
+      return
+    }
+
+    uploadVideoFrame()
+    renderPano()
+    videoRafId = requestAnimationFrame(step)
+  }
+  videoRafId = requestAnimationFrame(step)
+}
+
+function stopVideoLoop() {
+  cancelAnimationFrame(videoRafId)
 }
 
 function resolveProjectionMode(image: PanoramaImage): ProjectionMode {
@@ -1354,6 +1604,7 @@ function clearImages() {
   projectionChoice = 'auto'
   panoTextureReady = false
   flatImage.removeAttribute('src')
+  resetVideoElement()
   renderLibrary()
   setEmptyState()
 }
@@ -1365,6 +1616,7 @@ function setEmptyState() {
   emptyState.hidden = false
   viewerSurface.classList.remove('has-image')
   flatImage.hidden = true
+  resetVideoElement()
   panoCanvas.hidden = false
   hideMessage()
 }
@@ -1557,11 +1809,28 @@ function updateStatus() {
   fileDetails.textContent = image ? `${image.name} · ${formatBytes(image.size)}` : '等待图像'
   const projection = activeMode === 'sphere' ? '360' : '平面'
   const dimensions = image ? ` · ${image.width}x${image.height}` : ''
-  viewDetails.textContent = `${projection} · FOV ${Math.round(fov)}${dimensions}`
+  const duration = image?.media === 'video' && image.duration ? ` · ${formatTime(image.duration)}` : ''
+  viewDetails.textContent = `${projection} · FOV ${Math.round(fov)}${dimensions}${duration}`
 }
 
 function applyFlatTransform() {
-  flatImage.style.transform = `translate(${flatX}px, ${flatY}px) scale(${flatScale})`
+  const transform = `translate(${flatX}px, ${flatY}px) scale(${flatScale})`
+  flatImage.style.transform = transform
+  viewerVideo.style.transform = transform
+}
+
+function formatTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return '00:00'
+  }
+
+  const total = Math.floor(seconds)
+  const minutes = Math.floor(total / 60)
+  const remaining = total % 60
+  const hours = Math.floor(minutes / 60)
+  return hours > 0
+    ? `${hours}:${String(minutes % 60).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`
+    : `${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`
 }
 
 async function checkForAppUpdates() {
@@ -1677,16 +1946,22 @@ function stopLayoutResize() {
 }
 
 function getBrowserEntryIcon(kind: BrowserEntry['kind']) {
-  return kind === 'directory' ? entryIconMarkup.folder : kind === 'image' ? entryIconMarkup.image : entryIconMarkup.file
+  return kind === 'directory'
+    ? entryIconMarkup.folder
+    : kind === 'image'
+      ? entryIconMarkup.image
+      : kind === 'video'
+        ? entryIconMarkup.video
+        : entryIconMarkup.file
 }
 
 function getBrowserEntryKindLabel(kind: BrowserEntry['kind']) {
-  return kind === 'directory' ? '文件夹' : kind === 'image' ? '图像' : '其他'
+  return kind === 'directory' ? '文件夹' : kind === 'image' ? '图像' : kind === 'video' ? '视频' : '其他'
 }
 
 function getBrowserEntryMeta(entry: BrowserEntry) {
   const date = typeof entry.modifiedAt === 'number' ? formatDate(entry.modifiedAt) : ''
-  if (entry.kind === 'image' && typeof entry.size === 'number') {
+  if ((entry.kind === 'image' || entry.kind === 'video') && typeof entry.size === 'number') {
     return date ? `${formatBytes(entry.size)} · ${date}` : formatBytes(entry.size)
   }
 
@@ -1696,6 +1971,22 @@ function getBrowserEntryMeta(entry: BrowserEntry) {
 function isImageFile(file: File) {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
   return file.type.startsWith('image/') || imageExtensions.has(extension)
+}
+
+function isMediaFile(file: File) {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+  return isImageFile(file) || file.type.startsWith('video/') || videoExtensions.has(extension)
+}
+
+function getMediaKindFromName(name: string): 'image' | 'video' | '' {
+  const extension = name.split('.').pop()?.toLowerCase() ?? ''
+  if (imageExtensions.has(extension)) {
+    return 'image'
+  }
+  if (videoExtensions.has(extension)) {
+    return 'video'
+  }
+  return ''
 }
 
 function isEquirectangular(image: PanoramaImage) {

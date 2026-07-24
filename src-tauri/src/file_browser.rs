@@ -103,16 +103,16 @@ pub fn list_directory(path: String) -> Result<DirectoryListing, String> {
     let is_directory = file_type.as_ref().is_some_and(|item| item.is_dir());
     let is_file = file_type.as_ref().is_some_and(|item| item.is_file());
 
-    if !is_directory && !(is_file && is_image_name(&name)) {
+    if !is_directory && !(is_file && is_media_name(&name)) {
       continue;
     }
 
     let kind = if is_directory {
       "directory"
-    } else if is_file {
+    } else if is_image_name(&name) {
       "image"
     } else {
-      "other"
+      "video"
     };
     let metadata = if is_file {
       entry.metadata().ok()
@@ -187,7 +187,7 @@ fn directory_contains_image_budget(directory: &Path, budget: &mut usize) -> bool
       continue;
     };
 
-    if file_type.is_file() && is_image_name(&entry.file_name().to_string_lossy()) {
+    if file_type.is_file() && is_media_name(&entry.file_name().to_string_lossy()) {
       return true;
     }
 
@@ -213,7 +213,8 @@ fn entry_rank(kind: &str) -> u8 {
   match kind {
     "directory" => 0,
     "image" => 1,
-    _ => 2,
+    "video" => 2,
+    _ => 3,
   }
 }
 
@@ -228,9 +229,24 @@ fn is_image_name(name: &str) -> bool {
   )
 }
 
+fn is_video_name(name: &str) -> bool {
+  let Some(extension) = name.rsplit('.').next() else {
+    return false;
+  };
+
+  matches!(
+    extension.to_ascii_lowercase().as_str(),
+    "mp4" | "webm" | "mov" | "m4v"
+  )
+}
+
+fn is_media_name(name: &str) -> bool {
+  is_image_name(name) || is_video_name(name)
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{collect_images_from_directory, filter_folders_with_images, is_image_name, list_directory};
+  use super::{collect_images_from_directory, filter_folders_with_images, is_image_name, is_video_name, list_directory};
   use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
   #[test]
@@ -238,6 +254,9 @@ mod tests {
     assert!(is_image_name("PANO_0001.JPG"));
     assert!(is_image_name("preview.webp"));
     assert!(!is_image_name("notes.txt"));
+    assert!(is_video_name("DJI_0001.MP4"));
+    assert!(is_video_name("clip.webm"));
+    assert!(!is_video_name("movie.mkv"));
   }
 
   #[test]
@@ -251,14 +270,16 @@ mod tests {
     fs::create_dir_all(&nested).unwrap();
     fs::write(root.join("root.JPG"), b"root").unwrap();
     fs::write(nested.join("child.webp"), b"child").unwrap();
+    fs::write(nested.join("clip.mp4"), b"clip").unwrap();
     fs::write(nested.join("notes.txt"), b"notes").unwrap();
 
     let collection = collect_images_from_directory(root.to_string_lossy().to_string()).unwrap();
     let names: Vec<String> = collection.images.into_iter().map(|image| image.name).collect();
 
-    assert_eq!(names.len(), 2);
+    assert_eq!(names.len(), 3);
     assert!(names.contains(&"root.JPG".to_string()));
     assert!(names.contains(&"child.webp".to_string()));
+    assert!(names.contains(&"clip.mp4".to_string()));
 
     fs::remove_dir_all(root).unwrap();
   }
@@ -275,14 +296,18 @@ mod tests {
     fs::create_dir_all(&image_folder).unwrap();
     fs::create_dir_all(&empty_folder).unwrap();
     fs::write(root.join("root.png"), b"root").unwrap();
+    fs::write(root.join("clip.mp4"), b"clip").unwrap();
     fs::write(root.join("notes.txt"), b"notes").unwrap();
     fs::write(image_folder.join("child.jpg"), b"child").unwrap();
 
     let listing = list_directory(root.to_string_lossy().to_string()).unwrap();
     assert!(!listing.path.starts_with(r"\\?\"));
+    let video_kind = listing.entries.iter().find(|entry| entry.name == "clip.mp4").map(|entry| entry.kind.clone());
+    assert_eq!(video_kind.as_deref(), Some("video"));
     let names: Vec<String> = listing.entries.into_iter().map(|entry| entry.name).collect();
 
     assert!(names.contains(&"root.png".to_string()));
+    assert!(names.contains(&"clip.mp4".to_string()));
     assert!(names.contains(&"image-folder".to_string()));
     assert!(names.contains(&"empty-folder".to_string()));
     assert!(!names.contains(&"notes.txt".to_string()));
@@ -351,7 +376,7 @@ fn collect_images_recursive(
       let _ = collect_images_recursive(&entry_path, images, truncated);
     } else if metadata.is_file() {
       let name = entry.file_name().to_string_lossy().to_string();
-      if is_image_name(&name) {
+      if is_media_name(&name) {
         images.push(LocalImage {
           name,
           path: display_path(&entry_path),
