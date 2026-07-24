@@ -73,7 +73,8 @@ declare global {
 }
 
 const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'bmp'])
-const videoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v'])
+const videoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv'])
+const nativeVideoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v'])
 const videoRates = [0.5, 1, 1.5, 2]
 const entryIconMarkup = {
   folder: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 6.4c0-.8.7-1.4 1.5-1.4h4.4c.4 0 .8.1 1.1.4l1.4 1.2c.3.3.7.4 1.1.4h7c.8 0 1.5.6 1.5 1.4v1H3V6.4z" fill="#E8A33D"/><path d="M3 9h18v8.1c0 .8-.7 1.4-1.5 1.4h-15c-.8 0-1.5-.6-1.5-1.4V9z" fill="#FFD983"/><path d="M3 9h18v1.6H3V9z" fill="#FFE9B3"/></svg>',
@@ -272,6 +273,9 @@ let panoLoadTicket = 0
 let videoRafId = 0
 let videoSeekDragging = false
 let videoRateIndex = 1
+let videoToolsPromise: Promise<boolean> | null = null
+let videoThumbCache = new Map<string, string>()
+let videoThumbChain: Promise<void> = Promise.resolve()
 let browserRoots: BrowserRoot[] = []
 let browserEntries: BrowserEntry[] = []
 let browserCurrentPath = ''
@@ -1000,6 +1004,13 @@ function renderBrowserEntries() {
       } else {
         tile.dataset.kind = entry.kind
         tile.innerHTML = getBrowserEntryIcon(entry.kind)
+        if (entry.kind === 'video') {
+          requestVideoThumb(entry.path, (url) => {
+            tile.replaceChildren()
+            tile.classList.add('has-thumb')
+            tile.style.backgroundImage = `url("${url}")`
+          })
+        }
       }
       button.title = entry.name
       button.append(tile, name)
@@ -1070,18 +1081,21 @@ async function loadFiles(files: File[]) {
 async function loadLocalImages(collection: LocalImageCollection, activePath?: string) {
   showMessage('正在读取本地文件夹媒体...')
   const { convertFileSrc } = await import('@tauri-apps/api/core')
-  const nextImages = collection.images.map((image, index) => ({
-    id: `${image.path}-${index}`,
-    name: image.name,
-    url: convertFileSrc(image.path),
-    size: image.size,
-    modifiedAt: image.modifiedAt ?? 0,
-    width: 0,
-    height: 0,
-    kind: 'flat' as ProjectionMode,
-    media: getMediaKindFromName(image.name) || 'image' as const,
-    sourcePath: image.path,
-  }))
+  const nextImages = collection.images.map((image, index) => {
+    const media = getMediaKindFromName(image.name) || 'image' as const
+    return {
+      id: `${image.path}-${index}`,
+      name: image.name,
+      url: media === 'video' && videoNeedsPrepare(image.name) ? '' : convertFileSrc(image.path),
+      size: image.size,
+      modifiedAt: image.modifiedAt ?? 0,
+      width: 0,
+      height: 0,
+      kind: 'flat' as ProjectionMode,
+      media,
+      sourcePath: image.path,
+    }
+  })
 
   clearImageUrls()
   images = await Promise.all(nextImages.map(readImageInfo))
@@ -1103,6 +1117,10 @@ async function loadLocalImages(collection: LocalImageCollection, activePath?: st
 
 async function readImageInfo(image: PanoramaImage): Promise<PanoramaImage> {
   if (image.media === 'video') {
+    if (!image.url) {
+      image.kind = 'flat'
+      return image
+    }
     const info = await getVideoInfo(image.url)
     image.width = info.width
     image.height = info.height
@@ -1166,6 +1184,12 @@ function renderLibrary() {
     if (image.media === 'video') {
       thumb.classList.add('is-video')
       thumb.textContent = '▶'
+      if (image.sourcePath) {
+        requestVideoThumb(image.sourcePath, (url) => {
+          thumb.textContent = ''
+          thumb.style.backgroundImage = `url("${url}")`
+        })
+      }
     } else {
       thumb.style.backgroundImage = `url("${image.url}")`
     }
@@ -1208,9 +1232,147 @@ function loadImage(imageId: string) {
   emptyState.hidden = true
   viewerSurface.classList.add('has-image')
   renderLibrary()
+
+  if (image.media === 'video' && !image.url) {
+    resetVideoElement()
+    panoCanvas.hidden = true
+    flatImage.hidden = true
+    void prepareActiveVideo(image)
+    syncBrowserSelection(image)
+    return
+  }
+
   resetView()
   applyProjection(image)
+  if (image.media === 'video') {
+    void refineVideoProjection(image)
+  }
   syncBrowserSelection(image)
+}
+
+async function prepareActiveVideo(image: PanoramaImage) {
+  const invoke = await getTauriInvoke()
+  if (!invoke || !image.sourcePath) {
+    showMessage('当前环境无法播放该视频格式。')
+    return
+  }
+
+  showMessage('正在转换视频容器以便播放（首次需要几秒，结果会缓存）...')
+  try {
+    const playable = await invoke<string>('prepare_video', { path: image.sourcePath })
+    if (image.id !== activeImageId) {
+      return
+    }
+
+    const { convertFileSrc } = await import('@tauri-apps/api/core')
+    image.url = convertFileSrc(playable)
+    const info = await getVideoInfo(image.url)
+    image.width = info.width
+    image.height = info.height
+    image.duration = info.duration
+    image.kind = isEquirectangular(image) ? 'sphere' : 'flat'
+    if (image.id !== activeImageId) {
+      return
+    }
+
+    hideMessage()
+    renderLibrary()
+    resetView()
+    applyProjection(image)
+    void refineVideoProjection(image)
+  } catch (error) {
+    if (image.id === activeImageId) {
+      showMessage(String(error))
+    }
+  }
+}
+
+async function refineVideoProjection(image: PanoramaImage) {
+  if (!image.sourcePath) {
+    return
+  }
+
+  const invoke = await getTauriInvoke()
+  if (!invoke) {
+    return
+  }
+
+  try {
+    const probe = await invoke<{ spherical: boolean }>('probe_video', { path: image.sourcePath })
+    if (image.id !== activeImageId) {
+      return
+    }
+
+    const kind: ProjectionMode = probe.spherical || isEquirectangular(image) ? 'sphere' : 'flat'
+    if (kind !== image.kind) {
+      image.kind = kind
+      renderLibrary()
+      if (projectionChoice === 'auto') {
+        resetView()
+        applyProjection(image)
+      }
+    }
+  } catch {
+    // ffprobe 不可用时保持宽高比启发式识别
+  }
+}
+
+function videoNeedsPrepare(name: string) {
+  const extension = name.split('.').pop()?.toLowerCase() ?? ''
+  return videoExtensions.has(extension) && !nativeVideoExtensions.has(extension)
+}
+
+function checkVideoTools(): Promise<boolean> {
+  if (!videoToolsPromise) {
+    videoToolsPromise = (async () => {
+      const invoke = await getTauriInvoke()
+      if (!invoke) {
+        return false
+      }
+      try {
+        const status = await invoke<{ ffmpeg: boolean }>('video_tools_status')
+        return status.ffmpeg
+      } catch {
+        return false
+      }
+    })()
+  }
+  return videoToolsPromise
+}
+
+function requestVideoThumb(path: string, apply: (url: string) => void) {
+  const cached = videoThumbCache.get(path)
+  if (cached) {
+    apply(cached)
+    return
+  }
+
+  videoThumbChain = videoThumbChain.then(async () => {
+    const existing = videoThumbCache.get(path)
+    if (existing) {
+      apply(existing)
+      return
+    }
+
+    if (!await checkVideoTools()) {
+      return
+    }
+
+    const invoke = await getTauriInvoke()
+    if (!invoke) {
+      return
+    }
+
+    try {
+      const thumbPath = await invoke<string>('get_video_thumbnail', { path })
+      const { convertFileSrc } = await import('@tauri-apps/api/core')
+      const url = convertFileSrc(thumbPath)
+      videoThumbCache.set(path, url)
+      apply(url)
+    } catch {
+      // 无法生成缩略图时保留图标占位
+    }
+  })
 }
 
 function syncBrowserSelection(image: PanoramaImage) {
@@ -1431,6 +1593,10 @@ function applyProjection(image: PanoramaImage) {
   activeMode = resolveProjectionMode(image)
   projectionButton.textContent = getProjectionLabel()
   const isVideo = image.media === 'video'
+  if (isVideo && !image.url) {
+    updateStatus()
+    return
+  }
   panoCanvas.hidden = activeMode !== 'sphere'
   flatImage.hidden = isVideo || activeMode !== 'flat'
   panoTextureReady = false

@@ -236,7 +236,7 @@ fn is_video_name(name: &str) -> bool {
 
   matches!(
     extension.to_ascii_lowercase().as_str(),
-    "mp4" | "webm" | "mov" | "m4v"
+    "mp4" | "webm" | "mov" | "m4v" | "mkv"
   )
 }
 
@@ -256,7 +256,8 @@ mod tests {
     assert!(!is_image_name("notes.txt"));
     assert!(is_video_name("DJI_0001.MP4"));
     assert!(is_video_name("clip.webm"));
-    assert!(!is_video_name("movie.mkv"));
+    assert!(is_video_name("movie.mkv"));
+    assert!(!is_video_name("notes.txt"));
   }
 
   #[test]

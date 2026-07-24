@@ -1,6 +1,6 @@
 # 视频与全景视频支持方案
 
-日期：2026-07-24 ｜ 状态：Phase 1、Phase 2 实施中；Phase 3 待评估
+日期：2026-07-24 ｜ 状态：Phase 1、2、3 已实施
 
 ## 背景与目标
 
@@ -53,10 +53,32 @@ Phase 1/2 采用层级 A + B 检测提示。
 2. 播放中 rAF 帧循环上传纹理；暂停/seek 单帧刷新。
 3. 拖拽视角、滚轮 FOV、投影切换、居中/全屏全部复用现有逻辑；播放控制条在 360 模式继续可用。
 
-### Phase 3 —（待评估）
+### Phase 3 — ffmpeg 增强（已实施，探测式启用）
 
-- ffmpeg sidecar：MKV remux、视频封面缩略图。
-- spherical metadata 解析精确识别 360 视频。
+设计取跡：**不随安装包分发 ffmpeg**（完整二进制 ≈100MB，与轻量定位冲突）。程序启动后自动探测：
+
+1. 程序目录下的 `ffmpeg.exe` / `ffprobe.exe`；
+2. 系统 PATH。
+
+探测到即启用以下能力，否则优雅降级：
+
+- **MKV 播放**：打开 MKV 时后台流复制 remux 为 MP4（`-c copy`，秒级，不重编码），结果缓存；无 ffmpeg 时提示安装方式。含 MP4 不兼容编码时报错。
+- **视频缩略图**：图库与网格视图异步生成 320px 抽帧缩略图（串行队列，避免进程风暴）；无 ffmpeg 时回退播放图标。
+- **spherical metadata 识别**：打开视频时 ffprobe 检测球面元数据，与宽高比启发式取并集修正投影；无 ffprobe 时保持 2:1 启发式。
+
+缓存位置：`%LOCALAPPDATA%\PanoramaViewerLocal\media-cache`，按 路径+大小+修改时间 哈希命名（remux 为 .mp4，缩略图为 .jpg）。
+
+Rust 命令（src-tauri/src/video_tools.rs，均为 async 命令不阻塞主线程）：
+
+- `video_tools_status` → { ffmpeg, ffprobe }
+- `prepare_video(path)` → 原生容器直接返回；MKV 返回缓存 MP4 路径
+- `get_video_thumbnail(path)` → 缓存 JPG 路径（-ss 1 失败回退 -ss 0）
+- `probe_video(path)` → { spherical }
+
+### 后续可选（未实施）
+
+- 非 remux 可达格式（AVI/WMV/FLV/RMVB）的后台重编码队列。
+- 随安装包可选携带 ffmpeg 的安装选项。
 
 ## 风险与取舍
 

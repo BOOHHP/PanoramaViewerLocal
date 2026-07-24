@@ -1,4 +1,5 @@
 mod file_browser;
+mod video_tools;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -8,7 +9,11 @@ pub fn run() {
       file_browser::list_roots,
       file_browser::list_directory,
       file_browser::collect_images_from_directory,
-      file_browser::filter_folders_with_images
+      file_browser::filter_folders_with_images,
+      video_tools::video_tools_status,
+      video_tools::probe_video,
+      video_tools::prepare_video,
+      video_tools::get_video_thumbnail
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
